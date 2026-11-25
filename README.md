@@ -8,11 +8,30 @@ With DeepCluster, one worker can update an API while another updates its client.
 
 *Three workers are running. Review is queued until they finish. Select a column in Map to see what that worker is doing.*
 
-## Install DeepCluster and DSH
+## Install from a DSH chat
 
-Start with a fresh checkout of DSH `dsh-v0.2.1-rc.2`. You'll need Git, Node.js, pnpm, and a model credential. The API and workers run locally. DSH sends model requests to the provider you choose. [Build DSH and run your first worker](docs/setup.md)
+Open DSH on the machine where you want the workers to run and send it this request.
+
+```text
+Install DeepCluster from https://github.com/DylanWaken/DeepCluster.git
+Follow docs/setup.md in the version you clone. Build the plugin with DSH,
+start the service, and verify it with a real worker. Give me the connection
+details my coding tool will need.
+```
+
+DeepCluster's API and workers run locally. DSH sends model requests to the provider you choose. The [DSH installation guide](docs/setup.md) includes the pinned DSH version, build commands, and worker check.
 
 ## Connect your coding agent
+
+Once the service is running, open a chat in the coding tool you want to use. Send it this request from one of your projects.
+
+```text
+Connect this coding tool to my local DeepCluster service using this guide:
+https://raw.githubusercontent.com/DylanWaken/DeepCluster/main/docs/agent-skills.md
+Find my DSH installation and install this tool's skill. If you can't identify
+the installation, ask me where it is. Verify the connection with one read-only
+worker in this project and show me how to invoke the skill.
+```
 
 | Supervisor | Personal skill directory | Try it in a new chat |
 | --- | --- | --- |
@@ -20,7 +39,7 @@ Start with a fresh checkout of DSH `dsh-v0.2.1-rc.2`. You'll need Git, Node.js, 
 | Claude Code | `~/.claude/skills` | `/deep-cluster` |
 | Codex | `~/.agents/skills` | `$deep-cluster` |
 
-One installer writes the skill into the directory your tool already checks. If you use another coding tool, there's a prompt you can give its AI to set up and test the connection. [Install a skill for your coding agent](docs/agent-skills.md)
+Your coding agent can use the saved DSH connection or the details from the install chat. The [agent connection guide](docs/agent-skills.md) also covers tools that use custom commands or project instructions.
 
 For a first task, try the [sample plan](plugin/samples/parallel-plan.md). Two read-only workers inspect the installed DeepCluster package. One lists its entry points and the other lists its tests. A reviewer then names any entry points the tests missed.
 
