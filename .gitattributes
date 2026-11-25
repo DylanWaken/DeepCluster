@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.png binary
+# Unified diffs use a one-space prefix for blank context lines.
+setup/dsh-v0.2.1-rc.2.patch whitespace=-blank-at-eol

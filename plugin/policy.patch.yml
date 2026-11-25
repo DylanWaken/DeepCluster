@@ -1,0 +1,3 @@
+- insert:
+    - id: deep-cluster-policy
+      name: '@deepseek-ai/dsh-experimental-deep-cluster/policy'

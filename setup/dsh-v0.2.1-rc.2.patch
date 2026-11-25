@@ -1,0 +1,1743 @@
+diff --git a/apps/cli/package.json b/apps/cli/package.json
+index cd8c213..0435f6a 100644
+--- a/apps/cli/package.json
++++ b/apps/cli/package.json
+@@ -39,6 +39,7 @@
+     "@deepseek-ai/dsh-compaction-tool-result-pruner": "workspace:*",
+     "@deepseek-ai/dsh-cordis-client-runner": "workspace:*",
+     "@deepseek-ai/dsh-experimental-agent-team-profile": "workspace:*",
++    "@deepseek-ai/dsh-experimental-deep-cluster": "workspace:*",
+     "@deepseek-ai/dsh-experimental-inspector-profile": "workspace:*",
+     "@deepseek-ai/dsh-fs-local": "workspace:*",
+     "@deepseek-ai/dsh-goal": "workspace:*",
+diff --git a/packages/bundle/headless/cordis.patch.yml b/packages/bundle/headless/cordis.patch.yml
+index cf22453..358e32d 100644
+--- a/packages/bundle/headless/cordis.patch.yml
++++ b/packages/bundle/headless/cordis.patch.yml
+@@ -1,7 +1,7 @@
+ # The dsh-headless bundle patch: one-shot task mode directly over dsh-base.
+ # It mounts no Host, HTTP server, Web runtime, or browser plugin. An ordinary
+ # provider plugin injects `cmdlineArgs`, parses the task positional
+-# (`dsh --profile headless "<task>"`), the `--session-id` and `--json` options,
++# (`dsh --profile headless "<task>"`), session identity and `--json` options,
+ # and this app's --help, then the direct driver creates a fresh Agent, or adopts
+ # the exact Session the flag names, through the core registry and prints its
+ # durable result.
+@@ -27,6 +27,7 @@
+       config:
+         task: !!js ctx.headlessStartup.task
+         sessionId: !!js ctx.headlessStartup.sessionId
++        newSessionId: !!js ctx.headlessStartup.newSessionId
+         json: !!js ctx.headlessStartup.json
+ 
+ - id: hmr
+diff --git a/packages/bundle/headless/src/index.ts b/packages/bundle/headless/src/index.ts
+index 93006eb..c0b00c3 100644
+--- a/packages/bundle/headless/src/index.ts
++++ b/packages/bundle/headless/src/index.ts
+@@ -45,6 +45,8 @@ export interface Config {
+   task?: string
+   /** Exact Session identity to adopt; absent for a fresh random identity. An id with no stored Session fails. */
+   sessionId?: string
++  /** Exact fresh Session identity; requires durable storage and fails if the id already exists. */
++  newSessionId?: string
+   /** Whether stdout carries the machine-readable event stream instead of final text. */
+   json?: boolean
+ }
+@@ -52,6 +54,7 @@ export interface Config {
+ export const Config: z<Config> = z.object({
+   task: z.string(),
+   sessionId: z.string(),
++  newSessionId: z.string(),
+   json: z.boolean(),
+ })
+ 
+@@ -251,18 +254,7 @@ async function resolveAgent(
+   setup: (agentCtx: Context) => void,
+   cwd: string,
+ ): Promise<Agent> {
+-  // Resuming promises the caller a log a later process can continue. Without a
+-  // durable log the run would succeed, print the id, and still lose the whole
+-  // history at exit, so a miscomposed profile fails loud before the resume.
+-  if (ctx.get('sessionPersistence') === undefined) {
+-    throw new Error('headless --session-id requires the sessionPersistence service; the Session would not survive this process')
+-  }
+-  // A later process holds no live Agent and has to find the id through the
+-  // query service, so every --session-id run requires it.
+-  const query = ctx.get('sessionQuery')
+-  if (query === undefined) {
+-    throw new Error('headless --session-id requires the sessionQuery service; dsh-base provides it')
+-  }
++  const query = requireSessionServices(ctx, '--session-id')
+   const live = agents.get(sessionId)
+   if (live !== undefined) {
+     // A live Agent already has an owner that may still drive it, and `whenIdle`
+@@ -293,6 +285,16 @@ async function resolveAgent(
+   }
+ }
+ 
++/** Exact identities require storage and discovery before the one-shot task is admitted. */
++function requireSessionServices(ctx: Context, option: '--session-id' | '--new-session-id'): Context['sessionQuery'] {
++  if (ctx.get('sessionPersistence') === undefined) {
++    throw new Error(`headless ${option} requires the sessionPersistence service; the Session would not survive this process`)
++  }
++  const query = ctx.get('sessionQuery')
++  if (query === undefined) throw new Error(`headless ${option} requires the sessionQuery service; dsh-base provides it`)
++  return query
++}
++
+ /** Report an unexpected direct-driver failure and request a failing exit. */
+ function fail(io: HeadlessIo, error: unknown, json: boolean): void {
+   const message = error instanceof Error ? error.message : String(error)
+@@ -323,6 +325,12 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
+   if (config.sessionId !== undefined && config.sessionId.trim() === '') {
+     throw new Error('headless-runner: sessionId must not be blank')
+   }
++  if (config.newSessionId !== undefined && config.newSessionId.trim() === '') {
++    throw new Error('headless-runner: newSessionId must not be blank')
++  }
++  if (config.sessionId !== undefined && config.newSessionId !== undefined) {
++    throw new Error('headless-runner: sessionId and newSessionId are mutually exclusive')
++  }
+ 
+   const task = config.task === undefined || config.task === '-'
+     ? await internals.readStdin()
+@@ -341,7 +349,8 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
+     const selected: ModelSelectionRef = { current: selection, assembled: undefined }
+     installModelSelection(agentCtx, selected)
+   }
+-  const sessionId = brandString<SessionId>(config.sessionId ?? `session-${randomUUID()}`)
++  if (config.newSessionId !== undefined) requireSessionServices(ctx, '--new-session-id')
++  const sessionId = brandString<SessionId>(config.sessionId ?? config.newSessionId ?? `session-${randomUUID()}`)
+   const fs = ctx.get('fs')
+   const cwd = fs === undefined ? process.cwd() : fs.processPath(await fs.resolve('.'))
+   const agent = config.sessionId === undefined
+diff --git a/packages/bundle/headless/src/startup.ts b/packages/bundle/headless/src/startup.ts
+index 0288638..547ffd1 100644
+--- a/packages/bundle/headless/src/startup.ts
++++ b/packages/bundle/headless/src/startup.ts
+@@ -1,6 +1,6 @@
+ /**
+  * The one-shot app's command-line provider: it parses the task positional,
+- * `--session-id`, `--json`, and `--help`, then publishes
++ * `--session-id`, `--new-session-id`, `--json`, and `--help`, then publishes
+  * {@link HEADLESS_STARTUP_SERVICE}. The runner is an ordinary consumer whose
+  * lazy config waits for that service.
+  * @module @deepseek-ai/dsh-headless/startup
+@@ -27,6 +27,8 @@ export interface HeadlessStartupValues {
+   task: string | undefined
+   /** Exact Session identity to adopt; absent for a fresh random identity. */
+   sessionId: string | undefined
++  /** Exact fresh Session identity; fails if that identity already exists. */
++  newSessionId?: string
+   /** Whether stdout carries the machine-readable event stream instead of final text. */
+   json: boolean
+ }
+@@ -42,6 +44,7 @@ function headlessCommand(): Command {
+     .helpOption('-h, --help', 'show this help')
+     .option('--json', 'write newline-delimited run events to stdout instead of the final message')
+     .option('--session-id <id>', 'adopt the persisted Session with this id; an unknown id is an error')
++    .option('--new-session-id <id>', 'create a persisted Session with this exact id; an existing id is an error')
+     .argument('[task...]', 'the task text; multiple words are joined by spaces, and `-` reads stdin')
+     .addHelpText('after', `
+ Examples:
+@@ -49,12 +52,13 @@ Examples:
+   echo "run the tests" | dsh --profile headless   read the task from stdin
+   dsh --profile headless --json "run the tests"   emit machine-readable run events
+   dsh --profile headless --session-id session-… "continue"   resume an existing Session
++  dsh --profile headless --new-session-id session-… "begin"  create an exact new Session
+ `)
+ }
+ 
+ /**
+  * Whether the raw invocation asks for the machine-readable stream. The scan
+- * stops at `--` and skips a `--session-id` value, so a literal `--json` used as
++ * stops at `--` and skips identity-option values, so a literal `--json` used as
+  * an option value or a positional never installs the JSON error override.
+  * @param argv - the invocation's raw arguments.
+  * @returns whether `--json` is a real flag of this invocation.
+@@ -64,7 +68,7 @@ function jsonRequested(argv: readonly string[]): boolean {
+     const argument = argv[index]
+     if (argument === '--') return false
+     if (argument === '--json') return true
+-    if (argument === '--session-id') index += 1
++    if (argument === '--session-id' || argument === '--new-session-id') index += 1
+   }
+   return false
+ }
+@@ -104,16 +108,24 @@ export function apply(ctx: Context): void {
+     if (task === undefined && internals.stdinIsTty()) {
+       program.error('error: a task is required, for example: dsh --profile headless "run the tests"')
+     }
+-    const options = program.opts<{ json?: boolean; sessionId?: string }>()
++    const options = program.opts<{ json?: boolean; sessionId?: string; newSessionId?: string }>()
+     // A SessionId is opaque, so whitespace is part of the identity: validate
+     // emptiness on the trimmed value but hand the runner the exact string.
+     const sessionId = options.sessionId
+     if (sessionId !== undefined && sessionId.trim() === '') {
+       program.error('error: --session-id requires a non-empty session id')
+     }
++    const newSessionId = options.newSessionId
++    if (newSessionId !== undefined && newSessionId.trim() === '') {
++      program.error('error: --new-session-id requires a non-empty session id')
++    }
++    if (sessionId !== undefined && newSessionId !== undefined) {
++      program.error('error: --session-id and --new-session-id are mutually exclusive')
++    }
+     ctx.provide(HEADLESS_STARTUP_SERVICE, {
+       task,
+       sessionId,
++      ...newSessionId === undefined ? {} : { newSessionId },
+       json: options.json === true,
+     } satisfies HeadlessStartupValues)
+   })
+diff --git a/packages/subprocess/subprocess-local/src/index.ts b/packages/subprocess/subprocess-local/src/index.ts
+index be24927..754de7b 100644
+--- a/packages/subprocess/subprocess-local/src/index.ts
++++ b/packages/subprocess/subprocess-local/src/index.ts
+@@ -17,9 +17,10 @@ import { Context } from '@deepseek-ai/cordis'
+ import type * as NodePty from 'node-pty'
+ import type { IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty'
+ import { createLazyRequire } from '@deepseek-ai/dsh-lazy-require'
+-import { SubprocessRuntime, SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess'
++import { SubprocessRuntime, SubprocessExecutableNotFoundError, SubprocessRecoveryUnsupportedError } from '@deepseek-ai/dsh-subprocess'
+ import type {
+   SubprocessHandle,
++  SubprocessRangeReceipt,
+   SubprocessSpawnSpec,
+   SubprocessTerminalHandle,
+   SubprocessTerminalEnvironment,
+@@ -46,6 +47,7 @@ import {
+ import { LinuxScopeSelector } from './linux-scope-selector.ts'
+ import type { LinuxScopeDecision } from './linux-scope-selector.ts'
+ import { launchWindowsJob, probeWindowsJob } from './windows-job.ts'
++import { recoverWindowsRange } from './recovery.ts'
+ import { targetEnvironment } from './runner-launch.ts'
+ import { createProcessInspector } from './process-inspector.ts'
+ import type { ProcessInspector } from './process-inspector.ts'
+@@ -195,9 +197,29 @@ export class LocalSubprocessRuntime extends SubprocessRuntime {
+   }
+ 
+   spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
++    return this.spawnManaged(spec)
++  }
++
++  override spawnRecoverable(
++    spec: SubprocessSpawnSpec,
++    persistReceipt: (receipt: SubprocessRangeReceipt) => Promise<void>,
++  ): SubprocessHandle {
++    return this.spawnManaged(spec, persistReceipt)
++  }
++
++  override async recoverRange(receipt: SubprocessRangeReceipt, signal?: AbortSignal): Promise<void> {
++    if ((this.internals.platform ?? process.platform) !== 'win32') throw new SubprocessRecoveryUnsupportedError()
++    await recoverWindowsRange(receipt, signal)
++  }
++
++  private spawnManaged(
++    spec: SubprocessSpawnSpec,
++    persistReceipt?: (receipt: SubprocessRangeReceipt) => Promise<void>,
++  ): SubprocessHandle {
+     validateSubprocessSpec(spec)
+     const env = targetEnvironment(spec)
+     const containmentMode = this.selectContainmentMode('ordinary')
++    if (persistReceipt !== undefined && containmentMode !== 'windows-job') throw new SubprocessRecoveryUnsupportedError()
+     let handle: LocalSubprocessHandle
+     const internals: SpawnInternals = { ...this.internals, onSpillFailure: this.reportSpillFailure }
+     if (containmentMode === 'fallback') {
+@@ -206,9 +228,9 @@ export class LocalSubprocessRuntime extends SubprocessRuntime {
+       const binding = prepareManagedProcessBinding(internals)
+       const linuxScope = containmentMode === 'linux-scope' ? this.linuxScopeDecision : undefined
+       const launch = linuxScope === undefined
+-        ? launchWindowsJob(spec, env)
++        ? launchWindowsJob(spec, env, {}, persistReceipt)
+         : launchLinuxScope(spec, env, linuxScope.literalArgv)
+-      handle = bindManagedProcess(spec, launch, binding)
++      handle = bindManagedProcess(spec, launch, binding, 'owned')
+       if (linuxScope !== undefined) this.watchLinuxScopeStart(handle.done, linuxScope.generation)
+     }
+     this.live.add(handle)
+diff --git a/packages/subprocess/subprocess-local/src/recovery.ts b/packages/subprocess/subprocess-local/src/recovery.ts
+new file mode 100644
+index 0000000..2e5c068
+--- /dev/null
++++ b/packages/subprocess/subprocess-local/src/recovery.ts
+@@ -0,0 +1,50 @@
++/** Reopen and settle a durable native Windows subprocess range. */
++
++import { setTimeout } from 'node:timers/promises'
++import type { SubprocessRangeReceipt } from '@deepseek-ai/dsh-subprocess'
++import {
++  closeHandleChecked,
++  isJobEmpty,
++  loadWin32ProcessBindings,
++  openRecoveryJob,
++  terminateJob,
++} from '@deepseek-ai/dsh-win32-process'
++
++/** Native operations injected by recovery tests. */
++export interface WindowsRangeRecoveryInternals {
++  loadWin32ProcessBindings: typeof loadWin32ProcessBindings
++  openRecoveryJob: typeof openRecoveryJob
++  isJobEmpty: typeof isJobEmpty
++  terminateJob: typeof terminateJob
++  closeHandleChecked: typeof closeHandleChecked
++}
++
++const native: WindowsRangeRecoveryInternals = {
++  loadWin32ProcessBindings, openRecoveryJob, isJobEmpty, terminateJob, closeHandleChecked,
++}
++
++/**
++ * Terminate the exact named Job, including its runner and every nested child Job.
++ * @param receipt - provider-issued identity decoded by the durable-storage consumer.
++ * @param signal - cancels waiting without reporting successful recovery.
++ * @param internals - native operations used by deterministic tests.
++ * @returns after the Job is absent or its active-process count reaches zero.
++ */
++export async function recoverWindowsRange(
++  receipt: SubprocessRangeReceipt,
++  signal?: AbortSignal,
++  internals: WindowsRangeRecoveryInternals = native,
++): Promise<void> {
++  signal?.throwIfAborted()
++  const api = internals.loadWin32ProcessBindings()
++  const job = internals.openRecoveryJob(api, receipt.jobName)
++  if (job === null) return
++  try {
++    internals.terminateJob(api, job, 1)
++    while (!internals.isJobEmpty(api, job)) {
++      await setTimeout(10, undefined, { signal })
++    }
++  } finally {
++    internals.closeHandleChecked(api, job, 'recovered process Job')
++  }
++}
+diff --git a/packages/subprocess/subprocess-local/src/runner-protocol.ts b/packages/subprocess/subprocess-local/src/runner-protocol.ts
+index 7d51772..be5e214 100644
+--- a/packages/subprocess/subprocess-local/src/runner-protocol.ts
++++ b/packages/subprocess/subprocess-local/src/runner-protocol.ts
+@@ -12,6 +12,35 @@ import {
+ } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { basename, dirname, isAbsolute, join } from 'node:path'
++import { parseSubprocessRangeReceipt } from '@deepseek-ai/dsh-subprocess'
++import type { SubprocessRangeReceipt } from '@deepseek-ai/dsh-subprocess'
++
++/** Parent request to establish a recoverable range before target start. */
++export interface WindowsPrepareRequest { type: 'prepare-range' }
++
++/** The runner is contained in the named Job and has not started its target. */
++export interface WindowsRangeReady { type: 'range-ready'; receipt: SubprocessRangeReceipt }
++
++/**
++ * Recognize the exact native-range preparation request.
++ * @param value - parent IPC message.
++ * @returns whether the request contains only the preparation discriminator.
++ */
++export function isWindowsPrepareRequest(value: unknown): value is WindowsPrepareRequest {
++  return isRecord(value) && hasExactKeys(value, ['type']) && value.type === 'prepare-range'
++}
++
++/**
++ * Decode a native-range receipt from the runner.
++ * @param value - runner IPC message.
++ * @returns the validated preparation result.
++ */
++export function parseWindowsRangeReady(value: unknown): WindowsRangeReady {
++  if (!isRecord(value) || !hasExactKeys(value, ['type', 'receipt']) || value.type !== 'range-ready') {
++    throw new Error('subprocess runner emitted an invalid native-range receipt')
++  }
++  return { type: 'range-ready', receipt: parseSubprocessRangeReceipt(value.receipt) }
++}
+ 
+ /** Target state restored by the Linux bootstrap after systemd establishes the scope. */
+ export interface LinuxLaunchRequest {
+diff --git a/packages/subprocess/subprocess-local/src/spawn-runner.ts b/packages/subprocess/subprocess-local/src/spawn-runner.ts
+index b0d7681..4cb90f9 100644
+--- a/packages/subprocess/subprocess-local/src/spawn-runner.ts
++++ b/packages/subprocess/subprocess-local/src/spawn-runner.ts
+@@ -1,9 +1,12 @@
+ /** One-shot Linux exec bootstrap and Windows Job-owning subprocess runner. */
+ 
+ import { SUBPROCESS_CONTROL_FD } from '@deepseek-ai/dsh-subprocess/control'
++import type { SubprocessRecoveryJobName } from '@deepseek-ai/dsh-subprocess'
++import { randomUUID } from 'node:crypto'
+ import { closeSync } from 'node:fs'
+ import {
+   closeHandleChecked,
++  createRecoveryJobForCurrentProcess,
+   isJobEmpty,
+   loadWin32ProcessBindings,
+   pollProcessExit,
+@@ -18,6 +21,7 @@ import type {
+ import { loadLinuxExecve } from './linux-execve.ts'
+ import {
+   consumeLinuxLaunchRequest,
++  isWindowsPrepareRequest,
+   isWindowsTerminateRequest,
+   linuxLaunchFilesFromLocator,
+   parseWindowsStartRequest,
+@@ -28,6 +32,7 @@ import type {
+   LinuxLaunchFiles,
+   SerializedRunnerError,
+   WindowsRunnerResult,
++  WindowsRangeReady,
+   WindowsStartRequest,
+ } from './runner-protocol.ts'
+ import {
+@@ -45,6 +50,7 @@ type RunnerHost = Pick<NodeJS.Process, 'env' | 'exitCode' | 'connected' | 'cwd'
+ export interface SpawnRunnerInternals {
+   execve(file: string, argv: string[], env: Record<string, string>, control?: 'pipe'): never
+   loadWin32ProcessBindings(): CurrentTokenProcessBindings
++  createRecoveryJobForCurrentProcess: typeof createRecoveryJobForCurrentProcess
+   spawnCurrentTokenJobProcess: typeof spawnCurrentTokenJobProcess
+   closeFileDescriptor(fileDescriptor: number): void
+   resolveWindowsExecutable: typeof resolveWindowsExecutable
+@@ -58,6 +64,7 @@ const defaultInternals: SpawnRunnerInternals = {
+   /* v8 ignore next -- source/built/packaged subprocess smoke executes this only in a replaceable child process. */
+   execve: (file, argv, env, control) => loadLinuxExecve()(file, argv, env, control),
+   loadWin32ProcessBindings,
++  createRecoveryJobForCurrentProcess,
+   spawnCurrentTokenJobProcess,
+   closeFileDescriptor: closeSync,
+   resolveWindowsExecutable,
+@@ -203,7 +210,7 @@ function runLinux(
+   }
+ }
+ 
+-function sendMessage(host: RunnerHost, result: WindowsRunnerResult): Promise<void> {
++function sendMessage(host: RunnerHost, result: WindowsRunnerResult | WindowsRangeReady): Promise<void> {
+   return new Promise((resolve, reject) => {
+     if (!host.connected || host.send === undefined) {
+       reject(new Error('subprocess runner IPC is not connected'))
+@@ -226,6 +233,8 @@ class WindowsJobRunner {
+   private api: CurrentTokenProcessBindings | undefined
+   private processHandle: NativePtr | undefined
+   private jobHandle: NativePtr | undefined
++  /** Includes this runner; the OS closes its handle only as the runner exits. */
++  private recoveryJob: NativePtr | undefined
+   private pollTimer: ReturnType<typeof setInterval> | undefined
+   private startSeen = false
+   private terminateRequested = false
+@@ -256,6 +265,10 @@ class WindowsJobRunner {
+       this.requestTermination()
+       return
+     }
++    if (isWindowsPrepareRequest(value)) {
++      void this.prepareRecovery()
++      return
++    }
+     if (this.startSeen) {
+       void this.runnerFailure(new Error('subprocess runner received more than one Windows start request'))
+       return
+@@ -277,6 +290,25 @@ class WindowsJobRunner {
+     this.finish(127, false)
+   }
+ 
++  private async prepareRecovery(): Promise<void> {
++    if (this.startSeen || this.recoveryJob !== undefined) {
++      await this.runnerFailure(new Error('subprocess runner received a duplicate or late range preparation request'))
++      return
++    }
++    if (this.terminateRequested) {
++      await this.publishTerminalResult({ type: 'error', error: windowsStartCancelledError() }, 0)
++      return
++    }
++    try {
++      this.api = this.internals.loadWin32ProcessBindings()
++      const jobName = `Global\\dsh-subprocess-${randomUUID()}` as SubprocessRecoveryJobName
++      this.recoveryJob = this.internals.createRecoveryJobForCurrentProcess(this.api, jobName)
++      await sendMessage(this.host, { type: 'range-ready', receipt: { kind: 'windows-job', jobName } })
++    } catch (error) {
++      await this.runnerFailure(error)
++    }
++  }
++
+   private async start(request: WindowsStartRequest): Promise<void> {
+     if (this.terminateRequested) {
+       await this.publishTerminalResult({ type: 'error', error: windowsStartCancelledError() }, 0)
+@@ -336,6 +368,10 @@ class WindowsJobRunner {
+   private requestTermination(): void {
+     if (this.terminateRequested) return
+     this.terminateRequested = true
++    if (this.recoveryJob !== undefined && !this.startSeen) {
++      void this.publishTerminalResult({ type: 'error', error: windowsStartCancelledError() }, 0)
++      return
++    }
+     try {
+       this.terminateOwnedJob()
+     } catch (error) {
+diff --git a/packages/subprocess/subprocess-local/src/spawn.ts b/packages/subprocess/subprocess-local/src/spawn.ts
+index ed9baa2..a48a1b7 100644
+--- a/packages/subprocess/subprocess-local/src/spawn.ts
++++ b/packages/subprocess/subprocess-local/src/spawn.ts
+@@ -18,6 +18,7 @@ import type {
+   SubprocessHandle,
+   SubprocessOutcome,
+   SubprocessOutputMode,
++  SubprocessRangeScope,
+   SubprocessSpawnSpec,
+ } from '@deepseek-ai/dsh-subprocess'
+ import type { BoundProcessOwner, ManagedProcessLaunch } from './managed-owner.ts'
+@@ -262,12 +263,14 @@ function fallbackOwner(
+  * @param spec - fully resolved argv, cwd, stdio, grace, cancellation, environment.
+  * @param launch - platform streams, direct outcome, and managed-range owner.
+  * @param internals - spill-directory override and spill failure reporter.
++ * @param rangeScope - declared quality of the range the owner observes, when the launch path knows it.
+  * @returns live subprocess handle.
+  */
+ export function bindManagedProcess(
+   spec: SubprocessSpawnSpec,
+   launch: ManagedProcessLaunch,
+   internals: Pick<SpawnInternals, 'spillDir' | 'onSpillFailure'> = {},
++  rangeScope?: SubprocessRangeScope,
+ ): LocalSubprocessHandle {
+   const { spillDir, onSpillFailure } = prepareManagedProcessBinding(internals)
+   const { stdin, stdout, stderr } = launch
+@@ -434,6 +437,7 @@ export function bindManagedProcess(
+     stderr: errMode === 'pipe' ? stderr ?? undefined : undefined,
+     control: launch.control,
+     /* v8 ignore stop */
++    ...rangeScope === undefined ? {} : { rangeScope },
+     collected: {
+       ...stdoutCollector !== undefined ? { stdout: stdoutCollector } : {},
+       ...stderrCollector !== undefined ? { stderr: stderrCollector } : {},
+@@ -488,5 +492,5 @@ export function spawnSubprocess(spec: SubprocessSpawnSpec, internals: SpawnInter
+     control: controlPipe(child, spec.stdio.control),
+     direct,
+     owner,
+-  }, binding)
++  }, binding, platform === 'win32' ? 'direct-child' : 'owned')
+ }
+diff --git a/packages/subprocess/subprocess-local/src/windows-job.ts b/packages/subprocess/subprocess-local/src/windows-job.ts
+index 57f7c46..83fa14b 100644
+--- a/packages/subprocess/subprocess-local/src/windows-job.ts
++++ b/packages/subprocess/subprocess-local/src/windows-job.ts
+@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
+ import { closeSync, openSync } from 'node:fs'
+ import { devNull } from 'node:os'
+ import type { Readable, Writable } from 'node:stream'
+-import type { SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
++import type { SubprocessOutcome, SubprocessRangeReceipt, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+ import {
+   loadWin32ProcessBindings,
+   probeCurrentTokenJobSupport,
+@@ -16,6 +16,7 @@ import {
+   type WindowsRunnerResult,
+   deserializeRunnerError,
+   parseWindowsRunnerResult,
++  parseWindowsRangeReady,
+ } from './runner-protocol.ts'
+ import {
+   runnerEnvironment,
+@@ -77,11 +78,13 @@ class WindowsJobOwner implements BoundProcessOwner {
+     private readonly exited: Promise<void>,
+     private readonly directResultType: () => WindowsRunnerResult['type'] | undefined,
+     private readonly failInfrastructure: (error: unknown) => void,
++    private readonly stopStart: () => void,
+   ) {
+     void this.exited.catch(() => {})
+   }
+ 
+   signal(_signal: 'SIGTERM' | 'SIGKILL', cancellationReason?: unknown): void {
++    this.stopStart()
+     if (!this.cancellationReasonSet) {
+       this.cancellationReason = cancellationReason
+       this.cancellationReasonSet = true
+@@ -111,6 +114,7 @@ class WindowsJobOwner implements BoundProcessOwner {
+   }
+ 
+   terminateForHostExit(): void {
++    this.stopStart()
+     try { this.runner.kill('SIGKILL') } catch { /* Host exit continues with other live runners. */ }
+   }
+ }
+@@ -120,12 +124,14 @@ class WindowsJobOwner implements BoundProcessOwner {
+  * @param spec - ordinary target request.
+  * @param targetEnv - validated complete target environment.
+  * @param internals - optional runner launch seams used by tests.
++ * @param persistReceipt - durable identity writer awaited before a recoverable target starts.
+  * @returns direct streams, result, and runner-owned managed range.
+  */
+ export function launchWindowsJob(
+   spec: SubprocessSpawnSpec,
+   targetEnv: Record<string, string>,
+   internals: WindowsJobInternals = {},
++  persistReceipt?: (receipt: SubprocessRangeReceipt) => Promise<void>,
+ ): ManagedProcessLaunch {
+   const invocation = internals.runnerInvocation ?? spawnRunnerInvocation()
+   const [command, ...prefix] = invocation
+@@ -153,7 +159,11 @@ export function launchWindowsJob(
+   let runnerSpawned = false
+   let runnerExit: { exitCode: number | null; signal: NodeJS.Signals | null } | undefined
+   let ipcDisconnected = false
++  let startAllowed = true
++  let receiptSeen = false
++  let persistence: Promise<void> | undefined
+   const failInfrastructure = (error: unknown): void => {
++    startAllowed = false
+     direct.reject(error)
+     rangeExit.reject(error)
+   }
+@@ -176,13 +186,51 @@ export function launchWindowsJob(
+     ))
+   }
+ 
++  const joinRange = async (): Promise<void> => {
++    try {
++      await rangeExit.promise
++    } finally {
++      // Persistence failure is the direct start failure; range settlement still joins the write.
++      await persistence?.then(() => undefined, () => undefined)
++    }
++  }
+   const owner = new WindowsJobOwner(
+     child,
+-    rangeExit.promise,
++    joinRange(),
+     () => directResultType,
+     failInfrastructure,
++    () => { startAllowed = false },
+   )
++  const sendStart = (): void => {
++    if ((persistReceipt !== undefined && !startAllowed) || runnerExit !== undefined || ipcDisconnected) return
++    try {
++      if (child.send === undefined) throw new Error('subprocess-local: Windows runner has no IPC channel')
++      child.send({ type: 'start', cwd: spec.cwd, env: targetEnv, ...spec.stdio.control === undefined ? {} : { control: spec.stdio.control } }, (error) => {
++        if (error === null) return
++        failInfrastructure(error)
++        owner.terminateForHostExit()
++      })
++    } catch (error) {
++      failInfrastructure(error)
++      owner.terminateForHostExit()
++    }
++  }
+   child.on('message', (value: unknown) => {
++    if (persistReceipt !== undefined && !receiptSeen && directResultType === undefined && runnerExit === undefined && !ipcDisconnected
++      && typeof value === 'object' && value !== null && 'type' in value && value.type === 'range-ready') {
++      let receipt: SubprocessRangeReceipt
++      try {
++        receipt = parseWindowsRangeReady(value).receipt
++      } catch (error) {
++        failInfrastructure(error)
++        owner.terminateForHostExit()
++        return
++      }
++      receiptSeen = true
++      persistence = Promise.resolve().then(async () => { await persistReceipt(receipt) })
++      void persistence.then(sendStart, (error: unknown) => { owner.signal('SIGKILL', error) })
++      return
++    }
+     if (directResultType !== undefined) {
+       const error = new Error('subprocess-local: Windows runner emitted more than one direct result')
+       failInfrastructure(error)
+@@ -207,9 +255,13 @@ export function launchWindowsJob(
+   })
+   child.once('spawn', () => {
+     runnerSpawned = true
++    if (persistReceipt === undefined) {
++      sendStart()
++      return
++    }
+     try {
+       if (child.send === undefined) throw new Error('subprocess-local: Windows runner has no IPC channel')
+-      child.send({ type: 'start', cwd: spec.cwd, env: targetEnv, ...spec.stdio.control === undefined ? {} : { control: spec.stdio.control } }, (error) => {
++      child.send({ type: 'prepare-range' }, (error) => {
+         if (error === null) return
+         failInfrastructure(error)
+         owner.terminateForHostExit()
+@@ -228,10 +280,12 @@ export function launchWindowsJob(
+     failInfrastructure(error)
+   })
+   child.once('exit', (exitCode, signal) => {
++    startAllowed = false
+     runnerExit = { exitCode, signal }
+     settleRange()
+   })
+   child.once('disconnect', () => {
++    startAllowed = false
+     ipcDisconnected = true
+     settleRange()
+   })
+diff --git a/packages/subprocess/subprocess/package.json b/packages/subprocess/subprocess/package.json
+index c8ba0b3..fdf2ba7 100644
+--- a/packages/subprocess/subprocess/package.json
++++ b/packages/subprocess/subprocess/package.json
+@@ -33,10 +33,12 @@
+   "license": "MIT",
+   "peerDependencies": {
+     "@deepseek-ai/cordis": "workspace:~",
++    "@deepseek-ai/dsh-brand": "workspace:*",
+     "@deepseek-ai/dsh-http-proxy": "workspace:*"
+   },
+   "devDependencies": {
+     "@deepseek-ai/cordis": "workspace:~",
++    "@deepseek-ai/dsh-brand": "workspace:*",
+     "@deepseek-ai/dsh-http-proxy": "workspace:*",
+     "@deepseek-ai/dsh-launch-environment": "workspace:*"
+   }
+diff --git a/packages/subprocess/subprocess/src/index.ts b/packages/subprocess/subprocess/src/index.ts
+index 6dbbc62..cbbe931 100644
+--- a/packages/subprocess/subprocess/src/index.ts
++++ b/packages/subprocess/subprocess/src/index.ts
+@@ -13,6 +13,11 @@ import { proxyEnvironmentForChild } from '@deepseek-ai/dsh-http-proxy'
+ import { DSH_ENV_PREFIX } from './types.ts'
+ import type { SubprocessHandle, SubprocessSpawnSpec } from './types.ts'
+ import type { SubprocessTerminalEnvironment, SubprocessTerminalHandle, SubprocessTerminalSpawnSpec } from './types.ts'
++import { SubprocessRecoveryUnsupportedError } from './recovery.ts'
++import type { SubprocessRangeReceipt } from './recovery.ts'
++
++export { parseSubprocessRangeReceipt, SubprocessRecoveryUnsupportedError } from './recovery.ts'
++export type { SubprocessRangeReceipt, SubprocessRecoveryJobName } from './recovery.ts'
+ 
+ export { DSH_ENV_PREFIX } from './types.ts'
+ export type {
+@@ -26,6 +31,7 @@ export type {
+   SubprocessOutputMode,
+   SubprocessOutputRead,
+   SubprocessOutputReader,
++  SubprocessRangeScope,
+   SubprocessSpawnSpec,
+   SubprocessStdinMode,
+   SubprocessStdio,
+@@ -152,6 +158,32 @@ export abstract class SubprocessRuntime extends Service {
+    */
+   abstract spawn(spec: SubprocessSpawnSpec): SubprocessHandle
+ 
++  /**
++   * Prepare a recoverable native range and persist its identity before starting the target.
++   * Persistence failure prevents target start; cancellation and teardown join the persistence callback.
++   * @param _spec - fully specified process request.
++   * @param _persistReceipt - durably stores the provider receipt before resolving.
++   * @returns a handle whose range remains discoverable after supervisor failure.
++   * @throws when this provider cannot guarantee durable range recovery.
++   */
++  spawnRecoverable(
++    _spec: SubprocessSpawnSpec,
++    _persistReceipt: (receipt: SubprocessRangeReceipt) => Promise<void>,
++  ): SubprocessHandle {
++    throw new SubprocessRecoveryUnsupportedError()
++  }
++
++  /**
++   * Terminate a previously recorded native range and await confirmed quiescence.
++   * A missing native range is already settled; access errors and unknown outcomes reject.
++   * @param _receipt - validated provider-issued identity retained by the caller.
++   * @param _signal - cancels waiting without claiming the range has settled.
++   * @returns after the exact native range is absent or empty.
++   */
++  recoverRange(_receipt: SubprocessRangeReceipt, _signal?: AbortSignal): Promise<void> {
++    return Promise.reject(new SubprocessRecoveryUnsupportedError())
++  }
++
+   /**
+    * Allocate a real terminal and start one owned process session. This is the
+    * only non-pipe process primitive: implementations own terminal byte I/O,
+diff --git a/packages/subprocess/subprocess/src/recovery.ts b/packages/subprocess/subprocess/src/recovery.ts
+new file mode 100644
+index 0000000..7a6d83d
+--- /dev/null
++++ b/packages/subprocess/subprocess/src/recovery.ts
+@@ -0,0 +1,37 @@
++/** Durable identities for provider-owned native process ranges. */
++
++import type { Branded } from '@deepseek-ai/dsh-brand'
++
++/** Unpredictable Windows Job Object name issued by a subprocess provider. */
++export type SubprocessRecoveryJobName = Branded<'SubprocessRecoveryJobName'>
++
++/** Native range identity safe to retain after the creating supervisor exits. */
++export interface SubprocessRangeReceipt {
++  kind: 'windows-job'
++  jobName: SubprocessRecoveryJobName
++}
++
++/**
++ * Decode a receipt read from durable storage or another process.
++ * @param value - untrusted receipt JSON.
++ * @returns the validated native range identity.
++ */
++export function parseSubprocessRangeReceipt(value: unknown): SubprocessRangeReceipt {
++  if (typeof value !== 'object' || value === null || Array.isArray(value)
++    || !Object.hasOwn(value, 'kind') || !Object.hasOwn(value, 'jobName')
++    || !('kind' in value) || value.kind !== 'windows-job'
++    || !('jobName' in value) || typeof value.jobName !== 'string'
++    || !/^Global\\dsh-subprocess-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.jobName)
++    || Object.keys(value).length !== 2) {
++    throw new Error('Invalid subprocess recovery receipt')
++  }
++  return { kind: 'windows-job', jobName: value.jobName as SubprocessRecoveryJobName }
++}
++
++/** The selected provider cannot create or recover a durable native process range. */
++export class SubprocessRecoveryUnsupportedError extends Error {
++  constructor() {
++    super('This subprocess provider does not support durable native range recovery')
++    this.name = 'SubprocessRecoveryUnsupportedError'
++  }
++}
+diff --git a/packages/subprocess/subprocess/src/types.ts b/packages/subprocess/subprocess/src/types.ts
+index a005330..e8782b7 100644
+--- a/packages/subprocess/subprocess/src/types.ts
++++ b/packages/subprocess/subprocess/src/types.ts
+@@ -150,6 +150,14 @@ export interface SubprocessOutputReader {
+   readFrom(fromByte: number): SubprocessOutputRead
+ }
+ 
++/**
++ * Quality of the process range a provider observes for
++ * {@link SubprocessHandle.waitForExit}. `owned` covers descendants that remain
++ * in the provider's OS-owned range (a Windows Job, Linux scope, or process
++ * group); `direct-child` observes only the spawned command.
++ */
++export type SubprocessRangeScope = 'owned' | 'direct-child'
++
+ /** Offset-based readers for the streams spawned in collect mode. */
+ export interface SubprocessCollectedOutputs {
+   /** Present iff stdout is a {@link SubprocessCollect}. */
+@@ -177,6 +185,14 @@ export interface SubprocessHandle {
+   readonly control: Duplex | undefined
+   /** Offset-based readers for collect-mode streams (also readable after exit). */
+   readonly collected: SubprocessCollectedOutputs
++  /**
++   * Quality of the range {@link waitForExit} observes. Absent means the
++   * provider has not declared it; callers must not infer that descendants were
++   * terminated. An `owned` range covers descendants only within the provider's
++   * operating system: processes that cross into another kernel (for example a
++   * WSL distribution on Windows) remain outside it.
++   */
++  readonly rangeScope?: SubprocessRangeScope
+   /** Resolves with spawned-command exit facts; rejects for spawn or provider failures. */
+   readonly done: Promise<SubprocessOutcome>
+   /**
+diff --git a/packages/subprocess/subprocess/tsconfig.json b/packages/subprocess/subprocess/tsconfig.json
+index e72e6a3..9ad71f3 100644
+--- a/packages/subprocess/subprocess/tsconfig.json
++++ b/packages/subprocess/subprocess/tsconfig.json
+@@ -8,6 +8,9 @@
+     "src"
+   ],
+   "references": [
++    {
++      "path": "../../util/brand"
++    },
+     {
+       "path": "../../../vendor/cosmokit"
+     },
+diff --git a/packages/subprocess/win32-process/src/abi.ts b/packages/subprocess/win32-process/src/abi.ts
+index 7fd10f7..4abeb23 100644
+--- a/packages/subprocess/win32-process/src/abi.ts
++++ b/packages/subprocess/win32-process/src/abi.ts
+@@ -32,6 +32,14 @@ export const ERROR_INSUFFICIENT_BUFFER = 122
+ export const ERROR_BROKEN_PIPE = 109
+ /** Win32 code reporting that a pipe has no remaining data. */
+ export const ERROR_NO_DATA = 232
++/** Win32 code reporting that a named object does not exist. */
++export const ERROR_FILE_NOT_FOUND = 2
++/** Win32 code reporting that CreateJobObject opened an existing name. */
++export const ERROR_ALREADY_EXISTS = 183
++/** Job access permitting active-process accounting queries. */
++export const JOB_OBJECT_QUERY = 0x4
++/** Job access permitting termination of every member and nested Job. */
++export const JOB_OBJECT_TERMINATE = 0x8
+ /** Job limit that terminates every member when the final Job handle closes. */
+ export const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+ /** QueryInformationJobObject class for basic accounting and active-process count. */
+diff --git a/packages/subprocess/win32-process/src/ffi.ts b/packages/subprocess/win32-process/src/ffi.ts
+index b785016..950d2a1 100644
+--- a/packages/subprocess/win32-process/src/ffi.ts
++++ b/packages/subprocess/win32-process/src/ffi.ts
+@@ -107,7 +107,9 @@ export interface Win32ProcessBindings {
+   ): number
+   waitForSingleObject(handle: NativePtr, milliseconds: number): number
+   getExitCodeProcess(process: NativePtr, exitCode: NativePtr): number
+-  createJobObjectW(attributes: null, name: null): NativePtr
++  createJobObjectW(attributes: null, name: string | null): NativePtr
++  openJobObjectW(access: number, inherit: number, name: string): NativePtr
++  getCurrentProcess(): NativePtr
+   setInformationJobObject(job: NativePtr, cls: number, information: Buffer, length: number): number
+   queryInformationJobObject(
+     job: NativePtr,
+@@ -299,6 +301,8 @@ function bindings(): CurrentTokenProcessBindings {
+     waitForSingleObject: bind(kernel32, 'WaitForSingleObject', 'uint32', [PVOID, 'uint32']),
+     getExitCodeProcess: bind(kernel32, 'GetExitCodeProcess', 'int', [PVOID, koffi.pointer('uint32')]),
+     createJobObjectW: bind(kernel32, 'CreateJobObjectW', PVOID, [PVOID, 'str16']),
++    openJobObjectW: bind(kernel32, 'OpenJobObjectW', PVOID, ['uint32', 'int', 'str16']),
++    getCurrentProcess: bind(kernel32, 'GetCurrentProcess', PVOID, []),
+     setInformationJobObject: bind(kernel32, 'SetInformationJobObject', 'int', [PVOID, 'int', PVOID, 'uint32']),
+     queryInformationJobObject: bind(kernel32, 'QueryInformationJobObject', 'int', [
+       PVOID, 'int', PVOID, 'uint32', PVOID,
+diff --git a/packages/subprocess/win32-process/src/index.ts b/packages/subprocess/win32-process/src/index.ts
+index 5fc6de8..089805e 100644
+--- a/packages/subprocess/win32-process/src/index.ts
++++ b/packages/subprocess/win32-process/src/index.ts
+@@ -20,8 +20,10 @@ export type {
+ } from './ffi.ts'
+ export {
+   closeHandleChecked,
++  createRecoveryJobForCurrentProcess,
+   drainPipe,
+   isJobEmpty,
++  openRecoveryJob,
+   pollProcessExit,
+   probeCurrentTokenJobSupport,
+   spawnInheritedJobProcess,
+diff --git a/packages/subprocess/win32-process/src/process.ts b/packages/subprocess/win32-process/src/process.ts
+index 34ced07..16d58bb 100644
+--- a/packages/subprocess/win32-process/src/process.ts
++++ b/packages/subprocess/win32-process/src/process.ts
+@@ -337,9 +337,13 @@ export function waitForProcessExit(api: Win32ProcessBindings, process: NativePtr
+   }
+ }
+ 
+-function createKillOnCloseJob(api: Win32ProcessBindings): NativePtr {
+-  const job = api.createJobObjectW(null, null)
++function createKillOnCloseJob(api: Win32ProcessBindings, name: string | null = null): NativePtr {
++  const job = api.createJobObjectW(null, name)
+   if (isNullPtr(job)) throwLastError(api, 'CreateJobObjectW')
++  if (name !== null && api.getLastError() === abi.ERROR_ALREADY_EXISTS) {
++    api.closeHandle(job)
++    throwWin32(api, 'CreateJobObjectW', abi.ERROR_ALREADY_EXISTS)
++  }
+   const information = Buffer.alloc(abi.JOBOBJECT_EXTENDED_LIMIT_SIZE)
+   information.writeUInt32LE(
+     abi.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+@@ -358,6 +362,37 @@ function createKillOnCloseJob(api: Win32ProcessBindings): NativePtr {
+   return job
+ }
+ 
++/**
++ * Place the calling process in a fresh named kill-on-close Job before it creates children.
++ * The caller retains this handle until process exit; closing it terminates the caller too.
++ * @param api - loaded Win32 bindings.
++ * @param name - unpredictable globally unique Job name.
++ * @returns the owned Job handle, with the calling process already assigned.
++ */
++export function createRecoveryJobForCurrentProcess(api: Win32ProcessBindings, name: string): NativePtr {
++  const job = createKillOnCloseJob(api, name)
++  if (api.assignProcessToJobObject(job, api.getCurrentProcess()) === 0) {
++    const code = api.getLastError()
++    api.closeHandle(job)
++    throwWin32(api, 'AssignProcessToJobObject', code)
++  }
++  return job
++}
++
++/**
++ * Open a recorded Job with query and termination access without creating a replacement.
++ * @param api - loaded Win32 bindings.
++ * @param name - previously recorded Job name.
++ * @returns the Job handle, or null only when Windows reports the name absent.
++ */
++export function openRecoveryJob(api: Win32ProcessBindings, name: string): NativePtr | null {
++  const job = api.openJobObjectW(abi.JOB_OBJECT_QUERY | abi.JOB_OBJECT_TERMINATE, 0, name)
++  if (!isNullPtr(job)) return job
++  const code = api.getLastError()
++  if (code === abi.ERROR_FILE_NOT_FOUND) return null
++  throwWin32(api, 'OpenJobObjectW', code)
++}
++
+ interface ProcessStandardHandles {
+   stdin: NativePtr
+   stdout: NativePtr
+diff --git a/packages/subprocess/win32-process/verify/abi-probe.cpp b/packages/subprocess/win32-process/verify/abi-probe.cpp
+index 231a2fa..598810c 100644
+--- a/packages/subprocess/win32-process/verify/abi-probe.cpp
++++ b/packages/subprocess/win32-process/verify/abi-probe.cpp
+@@ -33,6 +33,10 @@ int wmain()
+   P(ERROR_INSUFFICIENT_BUFFER);
+   P(ERROR_BROKEN_PIPE);
+   P(ERROR_NO_DATA);
++  P(ERROR_FILE_NOT_FOUND);
++  P(ERROR_ALREADY_EXISTS);
++  P(JOB_OBJECT_QUERY);
++  P(JOB_OBJECT_TERMINATE);
+   P(sizeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+   P(offsetof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, ActiveProcesses));
+   P((int)JobObjectBasicAccountingInformation);
+@@ -51,6 +55,10 @@ int wmain()
+   static_assert(SW_HIDE == 0, "hidden window value");
+   static_assert(HANDLE_FLAG_INHERIT == 0x1, "inherit flag");
+   static_assert(WAIT_TIMEOUT == 258, "zero-time wait timeout");
++  static_assert(ERROR_FILE_NOT_FOUND == 2, "missing object code");
++  static_assert(ERROR_ALREADY_EXISTS == 183, "existing object code");
++  static_assert(JOB_OBJECT_QUERY == 0x4, "job query access");
++  static_assert(JOB_OBJECT_TERMINATE == 0x8, "job termination access");
+   static_assert(sizeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION) == 48, "job accounting size");
+   static_assert(offsetof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, ActiveProcesses) == 40, "active process offset");
+   static_assert(JobObjectBasicAccountingInformation == 1, "basic accounting class");
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 5f38bae..0bf74d3 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -311,6 +311,9 @@ importers:
+       '@deepseek-ai/dsh-experimental-cot-translation-bundle':
+         specifier: workspace:*
+         version: link:../../packages/experimental/cot-translation-bundle
++      '@deepseek-ai/dsh-experimental-deep-cluster':
++        specifier: workspace:*
++        version: link:../../packages/experimental/deep-cluster
+       '@deepseek-ai/dsh-experimental-inspector-profile':
+         specifier: workspace:*
+         version: link:../../packages/experimental/inspector-profile
+@@ -8677,6 +8680,115 @@ importers:
+         specifier: ^0.35.3
+         version: 0.35.5(@types/node@22.20.1)
+ 
++  packages/experimental/deep-cluster:
++    dependencies:
++      '@deepseek-ai/dsh-subprocess-local':
++        specifier: workspace:*
++        version: link:../../subprocess/subprocess-local
++      '@deepseek-ai/dsh-typert-protocol':
++        specifier: workspace:*
++        version: link:../../typert/protocol
++      '@deepseek-ai/dsh-util-values':
++        specifier: workspace:*
++        version: link:../../util/values
++      '@deepseek-ai/schemastery':
++        specifier: link:../../../vendor/schemastery
++        version: link:../../../vendor/schemastery
++      '@huggingface/tokenizers':
++        specifier: 0.2.0
++        version: 0.2.0
++      zod:
++        specifier: ^4.4.3
++        version: 4.4.3
++    devDependencies:
++      '@deepseek-ai/cordis':
++        specifier: workspace:~
++        version: link:../../../vendor/cordis
++      '@deepseek-ai/cordis-plugin-include':
++        specifier: workspace:~
++        version: link:../../../vendor/include
++      '@deepseek-ai/cordis-plugin-loader':
++        specifier: workspace:~
++        version: link:../../../vendor/loader
++      '@deepseek-ai/dsh-agent':
++        specifier: workspace:*
++        version: link:../../core/agent
++      '@deepseek-ai/dsh-api-remotes':
++        specifier: workspace:*
++        version: link:../../api/remotes
++      '@deepseek-ai/dsh-brand':
++        specifier: workspace:*
++        version: link:../../util/brand
++      '@deepseek-ai/dsh-client-locale':
++        specifier: workspace:*
++        version: link:../../client/locale
++      '@deepseek-ai/dsh-client-resources':
++        specifier: workspace:*
++        version: link:../../client/resources
++      '@deepseek-ai/dsh-client-test-runtime':
++        specifier: workspace:*
++        version: link:../../test-support/client-runtime
++      '@deepseek-ai/dsh-client-ui-layout':
++        specifier: workspace:*
++        version: link:../../client/ui-layout
++      '@deepseek-ai/dsh-client-ui-primitives':
++        specifier: workspace:*
++        version: link:../../client/ui-primitives
++      '@deepseek-ai/dsh-client-ui-renderer':
++        specifier: workspace:*
++        version: link:../../client/ui-renderer
++      '@deepseek-ai/dsh-client-ui-sidebar':
++        specifier: workspace:*
++        version: link:../../client/ui-sidebar
++      '@deepseek-ai/dsh-client-ui-slots':
++        specifier: workspace:*
++        version: link:../../client/ui-slots
++      '@deepseek-ai/dsh-cmdline':
++        specifier: workspace:*
++        version: link:../../boot/cmdline
++      '@deepseek-ai/dsh-host-webserver':
++        specifier: workspace:*
++        version: link:../../host/webserver
++      '@deepseek-ai/dsh-llm':
++        specifier: workspace:*
++        version: link:../../llm/llm
++      '@deepseek-ai/dsh-loader-smoke':
++        specifier: workspace:*
++        version: link:../../test-support/loader-smoke
++      '@deepseek-ai/dsh-session':
++        specifier: workspace:*
++        version: link:../../core/session
++      '@deepseek-ai/dsh-subprocess':
++        specifier: workspace:*
++        version: link:../../subprocess/subprocess
++      '@deepseek-ai/dsh-system-prompt':
++        specifier: workspace:*
++        version: link:../../core/system-prompt
++      '@deepseek-ai/dsh-tools':
++        specifier: workspace:*
++        version: link:../../core/tools
++      '@deepseek-ai/dsh-typert-registry':
++        specifier: workspace:*
++        version: link:../../typert/registry
++      '@testing-library/react':
++        specifier: ^16.3.0
++        version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
++      '@types/js-yaml':
++        specifier: ^4.0.9
++        version: 4.0.9
++      '@types/three':
++        specifier: ^0.186.0
++        version: 0.186.0
++      js-yaml:
++        specifier: ^4.3.2
++        version: 4.3.2
++      react:
++        specifier: ^18.2.0
++        version: 18.3.1
++      three:
++        specifier: ^0.186.1
++        version: 0.186.1
++
+   packages/experimental/hook-protocol:
+     devDependencies:
+       '@deepseek-ai/cordis':
+@@ -14392,6 +14504,9 @@ importers:
+       '@deepseek-ai/cordis':
+         specifier: workspace:~
+         version: link:../../../vendor/cordis
++      '@deepseek-ai/dsh-brand':
++        specifier: workspace:*
++        version: link:../../util/brand
+       '@deepseek-ai/dsh-http-proxy':
+         specifier: workspace:*
+         version: link:../../util/http-proxy
+@@ -16568,6 +16683,9 @@ packages:
+     engines: {node: '>=22.19.0'}
+     hasBin: true
+ 
++  '@dimforge/rapier3d-compat@0.12.0':
++    resolution: {integrity: sha512-uekIGetywIgopfD97oDL5PfeezkFpNhwlzlaEYNOA0N6ghdsOvh/HYjSMek5Q2O1PYvRSDFcqFVJl4r4ZBwOow==}
++
+   '@docsearch/css@3.8.2':
+     resolution: {integrity: sha512-y05ayQFyUmCXze79+56v/4HpycYF3uFqB78pLPrSV5ZKAlDuIAAJNhaRi8tTdRNXh05yxX/TyNnzD6LwSM89vQ==}
+ 
+@@ -17347,6 +17465,9 @@ packages:
+     peerDependencies:
+       hono: ^4
+ 
++  '@huggingface/tokenizers@0.2.0':
++    resolution: {integrity: sha512-LidMHe1FpcSYH4vcSjXooda34pC0M8m1gmDOv7SQi6Iv+ib1zX7J3sHBCC9/3FPCkn2k1b55FneVqMRxrr99pg==}
++
+   '@humanfs/core@0.19.2':
+     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
+     engines: {node: '>=18.18.0'}
+@@ -18860,6 +18981,9 @@ packages:
+   '@trycua/cua-driver@0.28.0':
+     resolution: {integrity: sha512-n3ArFsQ9RzNQIiYpHJEjTGLIPPpnqXDJRp0sevRcrRThAG3H2Fh/gWooEb9k4ba3rNSAohUoPiG/EbdKLF1WRw==}
+ 
++  '@tweenjs/tween.js@23.1.3':
++    resolution: {integrity: sha512-vJmvvwFxYuGnF2axRtPYocag6Clbb5YS7kLL+SO/TeVFzHqDIWrNKYtcsPMibjDx9O+bu+psAy9NKfWklassUA==}
++
+   '@tybys/wasm-util@0.10.2':
+     resolution: {integrity: sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg==}
+ 
+@@ -19138,6 +19262,12 @@ packages:
+   '@types/spdx-expression-parse@4.0.0':
+     resolution: {integrity: sha512-odQzy87phelGS4inXOzjmusx4hoCVD0IbxUANxHzVkmTzMRTNnUPoq1urIl7S1qf09KcDWKLFIftPmLtgbsAHA==}
+ 
++  '@types/stats.js@0.17.4':
++    resolution: {integrity: sha512-jIBvWWShCvlBqBNIZt0KAshWpvSjhkwkEu4ZUcASoAvhmrgAUI2t1dXrjSL4xXVLB4FznPrIsX3nKXFl/Dt4vA==}
++
++  '@types/three@0.186.0':
++    resolution: {integrity: sha512-mxYSBpDC+D0pLfSP6sW4WZTcT+nrtmZcimMqnVmy36Hte3XpeYSrvgg4TRdaM1GemGog1AWzI5qL2VoIfMXbJQ==}
++
+   '@types/tough-cookie@4.0.5':
+     resolution: {integrity: sha512-/Ad8+nIOV7Rl++6f1BdKxFSMgmoqEoYbHRpPcx3JEfv8VRsQe9Z4mCXeJBzxs7mbHY/XOZZuXlRNfhpVPbs6ZA==}
+ 
+@@ -19156,6 +19286,9 @@ packages:
+   '@types/web-bluetooth@0.0.21':
+     resolution: {integrity: sha512-oIQLCGWtcFZy2JW77j9k8nHzAOpqMHLQejDA48XXMWH6tjCQHz5RCFz1bzsmROyL6PUm+LLnUiI4BCn221inxA==}
+ 
++  '@types/webxr@0.5.24':
++    resolution: {integrity: sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg==}
++
+   '@types/whatwg-mimetype@3.0.2':
+     resolution: {integrity: sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA==}
+ 
+@@ -21700,6 +21833,9 @@ packages:
+   mermaid@11.17.2:
+     resolution: {integrity: sha512-V6K3C8EBdEsPFZXSKMJe6ppQOENxuHARr9GvHX4hh47lAbhMRD9qf4oEK7LoaRQxULMa80/qt5gHO73aCleBBg==}
+ 
++  meshoptimizer@1.1.1:
++    resolution: {integrity: sha512-oRFNWJRDA/WTrVj7NWvqa5HqE1t9MYDj2VaWirQCzCCrAd2GHrqR/sQezCxiWATPNlKTcRaPRHPJwIRoPBAp5g==}
++
+   micromark-core-commonmark@2.0.3:
+     resolution: {integrity: sha512-RDBrHEMSxVFLg6xvnXmb1Ayr2WzLAWjeSATAoxwKYJV94TeNavgoIdA0a9ytzDSVzBy2YKFK+emCPOEibLeCrg==}
+ 
+@@ -22967,6 +23103,9 @@ packages:
+   text-decoder@1.2.7:
+     resolution: {integrity: sha512-vlLytXkeP4xvEq2otHeJfSQIRyWxo/oZGEbXrtEEF9Hnmrdly59sUbzZ/QgyWuLYHctCHxFF4tRQZNQ9k60ExQ==}
+ 
++  three@0.186.1:
++    resolution: {integrity: sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==}
++
+   tiny-async-pool@1.3.0:
+     resolution: {integrity: sha512-01EAw5EDrcVrdgyCLgoSPvqznC0sVxDSVeiOz09FUpjh71G79VCqneOr+xvt7T1r76CF6ZZfPjHorN2+d+3mqA==}
+ 
+@@ -24314,6 +24453,8 @@ snapshots:
+       '@deepseek-ai/libreoffice-kit-win32-arm64': 0.1.5
+       '@deepseek-ai/libreoffice-kit-win32-x64': 0.1.5
+ 
++  '@dimforge/rapier3d-compat@0.12.0': {}
++
+   '@docsearch/css@3.8.2': {}
+ 
+   '@docsearch/js@3.8.2(@algolia/client-search@5.55.2)(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(search-insights@2.17.3)':
+@@ -24902,6 +25043,8 @@ snapshots:
+     dependencies:
+       hono: 4.13.7
+ 
++  '@huggingface/tokenizers@0.2.0': {}
++
+   '@humanfs/core@0.19.2':
+     dependencies:
+       '@humanfs/types': 0.15.0
+@@ -26076,6 +26219,8 @@ snapshots:
+       '@trycua/cua-driver-win32-arm64-msvc': 0.28.0
+       '@trycua/cua-driver-win32-x64-msvc': 0.28.0
+ 
++  '@tweenjs/tween.js@23.1.3': {}
++
+   '@tybys/wasm-util@0.10.2':
+     dependencies:
+       tslib: 2.8.1
+@@ -26403,6 +26548,17 @@ snapshots:
+ 
+   '@types/spdx-expression-parse@4.0.0': {}
+ 
++  '@types/stats.js@0.17.4': {}
++
++  '@types/three@0.186.0':
++    dependencies:
++      '@dimforge/rapier3d-compat': 0.12.0
++      '@tweenjs/tween.js': 23.1.3
++      '@types/stats.js': 0.17.4
++      '@types/webxr': 0.5.24
++      fflate: 0.8.3
++      meshoptimizer: 1.1.1
++
+   '@types/tough-cookie@4.0.5': {}
+ 
+   '@types/trusted-types@2.0.7': {}
+@@ -26415,6 +26571,8 @@ snapshots:
+ 
+   '@types/web-bluetooth@0.0.21': {}
+ 
++  '@types/webxr@0.5.24': {}
++
+   '@types/whatwg-mimetype@3.0.2': {}
+ 
+   '@types/ws@8.18.1':
+@@ -29372,6 +29530,8 @@ snapshots:
+       ts-dedent: 2.3.0
+       uuid: 14.0.1
+ 
++  meshoptimizer@1.1.1: {}
++
+   micromark-core-commonmark@2.0.3:
+     dependencies:
+       decode-named-character-reference: 1.3.0
+@@ -30842,6 +31002,8 @@ snapshots:
+     transitivePeerDependencies:
+       - react-native-b4a
+ 
++  three@0.186.1: {}
++
+   tiny-async-pool@1.3.0:
+     dependencies:
+       semver: 5.7.2
+diff --git a/tsconfig.base.json b/tsconfig.base.json
+index 2b3e9aa..621ff2e 100644
+--- a/tsconfig.base.json
++++ b/tsconfig.base.json
+@@ -338,6 +338,16 @@
+       "@deepseek-ai/dsh-sdk-jsonrpc-server": ["./packages/sdk/server/src"],
+       "@deepseek-ai/dsh-experimental-agent-team": ["./packages/experimental/agent-team/src"],
+       "@deepseek-ai/dsh-experimental-auto-review": ["./packages/experimental/auto-review/src"],
++      "@deepseek-ai/dsh-experimental-deep-cluster": ["./packages/experimental/deep-cluster/src"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/types": ["./packages/experimental/deep-cluster/src/types.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/command": ["./packages/experimental/deep-cluster/src/command.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/api": ["./packages/experimental/deep-cluster/src/api.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/telemetry": ["./packages/experimental/deep-cluster/src/telemetry.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/policy": ["./packages/experimental/deep-cluster/src/policy.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/team": ["./packages/experimental/deep-cluster/src/team.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/client": ["./packages/experimental/deep-cluster/src/client/index.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/web": ["./packages/experimental/deep-cluster/src/web.ts"],
++      "@deepseek-ai/dsh-experimental-deep-cluster/dashboard-types": ["./packages/experimental/deep-cluster/src/dashboard-types.ts"],
+       "@deepseek-ai/dsh-experimental-claude-code-mods": ["./packages/experimental/claude-code-mods/src"],
+       "@deepseek-ai/dsh-experimental-agent-team-profile": ["./packages/experimental/agent-team-profile/src"],
+       "@deepseek-ai/dsh-experimental-tool-agent-team": ["./packages/experimental/tool-agent-team/src"],
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index b2f0423..a49a604 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -152,6 +152,7 @@
+     { "path": "./packages/api/workspace-files/tsconfig.client.json" },
+     { "path": "./packages/client/web" },
+     { "path": "./packages/context/file-reference" },
+-    { "path": "./apps/web" }
++    { "path": "./apps/web" },
++    { "path": "./packages/experimental/deep-cluster/tsconfig.client.json" }
+   ]
+ }
+diff --git a/tsconfig.host.json b/tsconfig.host.json
+index 6eb4662..c46d200 100644
+--- a/tsconfig.host.json
++++ b/tsconfig.host.json
+@@ -392,6 +392,7 @@
+     { "path": "./packages/interaction/user-approval" },
+     { "path": "./packages/interaction/permission-presets" },
+     { "path": "./packages/experimental/auto-review" },
++    { "path": "./packages/experimental/deep-cluster/tsconfig.host.json" },
+     { "path": "./packages/experimental/claude-code-mods" },
+     { "path": "./packages/core/tools" },
+     { "path": "./packages/core/agent-tool-presentation" },
+diff --git a/packages/subprocess/subprocess-local/tests/spawn-runner.spec.ts b/packages/subprocess/subprocess-local/tests/spawn-runner.spec.ts
+index e2df9d213a..ddc0859edd 100644
+--- a/packages/subprocess/subprocess-local/tests/spawn-runner.spec.ts
++++ b/packages/subprocess/subprocess-local/tests/spawn-runner.spec.ts
+@@ -27,6 +27,7 @@ import {
+   isWindowsTerminateRequest,
+   linuxLaunchFilesFromLocator,
+   parseWindowsRunnerResult,
++  parseWindowsRangeReady,
+   parseWindowsStartRequest,
+   readLinuxStartupError,
+   serializeRunnerError,
+@@ -94,6 +95,7 @@ function internals(overrides: Partial<SpawnRunnerInternals> = {}): SpawnRunnerIn
+   return {
+     execve: vi.fn(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) }),
+     loadWin32ProcessBindings: vi.fn(() => ({} as CurrentTokenProcessBindings)),
++    createRecoveryJobForCurrentProcess: vi.fn(() => 30n as NativePtr),
+     spawnCurrentTokenJobProcess: vi.fn(() => ({
+       pid: 123,
+       process: 10n as NativePtr,
+@@ -126,6 +128,43 @@ async function runWindows(
+ }
+ 
+ describe('closed runner protocol', () => {
++  it('establishes a recovery Job before publishing its receipt and waits for start', async () => {
++    const host = new FakeRunnerHost()
++    const native = internals()
++    const running = runSpawnRunner(WINDOWS_RUNNER_SELECTION, ['--', 'tool.exe'], hostArgument(host), native)
++    host.emit('message', { type: 'prepare-range' })
++    await vi.waitFor(() => { expect(host.sent).toHaveLength(1) })
++    expect(native.createRecoveryJobForCurrentProcess).toHaveBeenCalledOnce()
++    expect(parseWindowsRangeReady(host.sent[0]).receipt.jobName).toMatch(/^Global\\dsh-subprocess-/u)
++    expect(native.spawnCurrentTokenJobProcess).not.toHaveBeenCalled()
++    host.emit('message', { type: 'start', cwd: 'C:\\target', env: {} })
++    await running
++    expect(native.spawnCurrentTokenJobProcess).toHaveBeenCalledOnce()
++    expect(native.closeHandleChecked).not.toHaveBeenCalledWith(expect.anything(), 30n, expect.anything())
++    expect(host.exitCode).toBe(0)
++  })
++
++  it('settles a prepared runner cancelled before target start', async () => {
++    const host = new FakeRunnerHost()
++    const native = internals()
++    const running = runSpawnRunner(WINDOWS_RUNNER_SELECTION, ['--', 'tool.exe'], hostArgument(host), native)
++    host.emit('message', { type: 'prepare-range' })
++    host.emit('message', { type: 'terminate' })
++    await running
++    expect(native.spawnCurrentTokenJobProcess).not.toHaveBeenCalled()
++    expect(host.sent[1]).toMatchObject({ type: 'error', error: { message: 'subprocess target start was cancelled' } })
++    expect(host.exitCode).toBe(0)
++  })
++
++  it('fails range preparation before any target can be created', async () => {
++    const host = new FakeRunnerHost()
++    const native = internals({ createRecoveryJobForCurrentProcess: () => { throw new Error('assignment denied') } })
++    await runWindows(host, native, { type: 'prepare-range' })
++    expect(native.spawnCurrentTokenJobProcess).not.toHaveBeenCalled()
++    expect(host.sent).toEqual([{ type: 'error', error: { name: 'Error', message: 'assignment denied' } }])
++    expect(host.exitCode).toBe(127)
++  })
++
+   it('preserves the explicit control request and rejects other transport values', () => {
+     const files = track(createLinuxLaunchFiles({ cwd: '/target', env: {}, control: 'pipe' }))
+     expect(consumeLinuxLaunchRequest(files.requestPath)).toEqual({ cwd: '/target', env: {}, control: 'pipe' })
+@@ -450,15 +489,21 @@ describe('runner launch inputs', () => {
+     const executable = join(directory, 'direct.exe')
+     const directoryCandidate = join(directory, 'directory')
+     const missingExecutable = join(directory, 'missing.exe')
+-    const danglingAlias = join(directory, 'alias.exe')
++    const fileAlias = join(directory, 'alias.exe')
+     writeFileSync(executable, '')
+     mkdirSync(`${directoryCandidate}.com`)
+     writeFileSync(`${directoryCandidate}.exe`, '')
+-    symlinkSync(missingExecutable, danglingAlias, 'file')
+-    expect(resolveWindowsExecutable(executable, '', {})).toBe(executable)
+-    expect(resolveWindowsExecutable(directoryCandidate, '', {})).toBe(`${directoryCandidate}.exe`)
+-    expect(resolveWindowsExecutable(danglingAlias, '', {})).toBe(danglingAlias)
+-    expect(resolveWindowsExecutable(missingExecutable, '', {})).toBeUndefined()
++    symlinkSync(executable, fileAlias, 'file')
++    try {
++      expect(resolveWindowsExecutable(executable, '', {})).toBe(executable)
++      expect(resolveWindowsExecutable(directoryCandidate, '', {})).toBe(`${directoryCandidate}.exe`)
++      expect(resolveWindowsExecutable(fileAlias, '', {})).toBe(fileAlias)
++      expect(resolveWindowsExecutable(missingExecutable, '', {})).toBeUndefined()
++    } finally { unlinkSync(fileAlias) }
++    if (process.platform !== 'win32') {
++      symlinkSync(missingExecutable, fileAlias, 'file')
++      try { expect(resolveWindowsExecutable(fileAlias, '', {})).toBe(fileAlias) } finally { unlinkSync(fileAlias) }
++    }
+   })
+ })
+ 
+diff --git a/packages/subprocess/subprocess-local/tests/spawn.spec.ts b/packages/subprocess/subprocess-local/tests/spawn.spec.ts
+index dc77e0b429..dceedd9150 100644
+--- a/packages/subprocess/subprocess-local/tests/spawn.spec.ts
++++ b/packages/subprocess/subprocess-local/tests/spawn.spec.ts
+@@ -1457,6 +1457,22 @@ describe('abort edge cases', () => {
+   })
+ })
+ 
++describe('range observation declaration', () => {
++  it('declares direct-child observation for the Windows fallback owner', async () => {
++    const handle = spawnSubprocess(spec('echo hi'), { platform: 'win32' })
++    expect(handle.rangeScope).toBe('direct-child')
++    await handle.done
++    await handle.waitForExit()
++  })
++
++  it('declares owned observation for a POSIX process-group fallback', async () => {
++    const handle = spawnSubprocess(spec('echo hi'), { platform: 'linux' })
++    expect(handle.rangeScope).toBe('owned')
++    await handle.done
++    await handle.waitForExit()
++  })
++})
++
+ describe('environment and spill-file hardening', () => {
+   it('scrubs credential-shaped and ambient DSH env vars from child processes', async () => {
+     process.env.DSH_TEST_API_KEY = 'super-secret'
+diff --git a/packages/subprocess/subprocess-local/tests/windows-job.spec.ts b/packages/subprocess/subprocess-local/tests/windows-job.spec.ts
+index c2f30a682b..5bacfc931d 100644
+--- a/packages/subprocess/subprocess-local/tests/windows-job.spec.ts
++++ b/packages/subprocess/subprocess-local/tests/windows-job.spec.ts
+@@ -7,6 +7,8 @@ import {
+   probeWindowsJob,
+ } from '../src/windows-job.ts'
+ import { bindManagedProcess } from '../src/spawn.ts'
++import { parseSubprocessRangeReceipt } from '@deepseek-ai/dsh-subprocess'
++import type { SubprocessRangeReceipt } from '@deepseek-ai/dsh-subprocess'
+ 
+ class FakeChild extends EventEmitter {
+   pid: number | undefined = 432
+@@ -67,12 +69,13 @@ function launch(
+   child = new FakeChild(),
+   request: Parameters<typeof launchWindowsJob>[0] = spec,
+   emitSpawn = true,
++  persistReceipt?: (receipt: SubprocessRangeReceipt) => Promise<void>,
+ ) {
+   const spawn = vi.fn((_command: string, _args: readonly string[], _options: unknown) => child)
+   const result = launchWindowsJob(request, { TARGET: 'yes' }, {
+     spawn: spawn as never,
+     runnerInvocation: ['C:\\node.exe', 'C:\\runner.js'],
+-  })
++  }, persistReceipt)
+   if (emitSpawn) child.emit('spawn')
+   return { child, result, spawn }
+ }
+@@ -144,6 +147,86 @@ describe('Windows Job capability', () => {
+ })
+ 
+ describe('Windows parent runner contract', () => {
++  const receipt = parseSubprocessRangeReceipt({ kind: 'windows-job', jobName: 'Global\\dsh-subprocess-12345678-1234-4234-8234-123456789abc' })
++
++  it('starts a recoverable target only after its receipt is durably saved', async () => {
++    const saved: PromiseWithResolvers<void> = Promise.withResolvers()
++    const received = Promise.withResolvers<SubprocessRangeReceipt>()
++    const { child, result } = launch(new FakeChild(), spec, true, (value) => {
++      received.resolve(value)
++      return saved.promise
++    })
++    expect(child.sent).toEqual([{ type: 'prepare-range' }])
++    child.emit('message', { type: 'range-ready', receipt })
++    expect(await received.promise).toEqual(receipt)
++    expect(child.sent).toHaveLength(1)
++    saved.resolve()
++    await vi.waitFor(() => { expect(child.sent).toHaveLength(2) })
++    expect(child.sent[1]).toMatchObject({ type: 'start', cwd: spec.cwd })
++    child.emit('message', { type: 'target-exit', exitCode: 0 })
++    child.exit(0, null)
++    await result.direct
++    await result.owner.waitForExit()
++  })
++
++  it('joins a pending receipt write after cancellation without starting the target', async () => {
++    const saved: PromiseWithResolvers<void> = Promise.withResolvers()
++    const entered: PromiseWithResolvers<void> = Promise.withResolvers()
++    const { child, result } = launch(new FakeChild(), spec, true, () => { entered.resolve(); return saved.promise })
++    const direct = result.direct.catch((error: unknown) => error)
++    child.emit('message', { type: 'range-ready', receipt })
++    await entered.promise
++    const reason = new Error('cancelled while saving')
++    result.owner.signal('SIGKILL', reason)
++    child.emit('message', { type: 'error', error: { name: 'Error', message: 'subprocess target start was cancelled' } })
++    child.exit(0, null)
++    expect(await direct).toBe(reason)
++    let settled = false
++    const joined = result.owner.waitForExit().then(() => { settled = true })
++    await new Promise<void>((resolve) => { setImmediate(resolve) })
++    expect(settled).toBe(false)
++    saved.resolve()
++    await joined
++    expect(child.sent).toEqual([{ type: 'prepare-range' }, { type: 'terminate' }])
++  })
++
++  it('returns a failed receipt write as the start failure and settles its empty range', async () => {
++    const failure = new Error('disk full')
++    const { child, result } = launch(new FakeChild(), spec, true, () => Promise.reject(failure))
++    const direct = result.direct.catch((error: unknown) => error)
++    child.emit('message', { type: 'range-ready', receipt })
++    await vi.waitFor(() => { expect(child.sent).toHaveLength(2) })
++    child.emit('message', { type: 'error', error: { name: 'Error', message: 'subprocess target start was cancelled' } })
++    child.exit(0, null)
++    expect(await direct).toBe(failure)
++    await result.owner.waitForExit()
++    expect(child.sent[1]).toEqual({ type: 'terminate' })
++  })
++
++  it('rejects a forged native range name before invoking the storage callback', async () => {
++    const persist = vi.fn(async () => {})
++    const { child, result } = launch(new FakeChild(), spec, true, persist)
++    const direct = result.direct.catch((error: unknown) => error)
++    const range = result.owner.waitForExit().catch((error: unknown) => error)
++    child.emit('message', { type: 'range-ready', receipt: { kind: 'windows-job', jobName: 'unrelated-job' } })
++    expect(await direct).toBeInstanceOf(Error)
++    expect(await range).toBeInstanceOf(Error)
++    expect(persist).not.toHaveBeenCalled()
++    expect(child.killed).toEqual(['SIGKILL'])
++  })
++
++  it('does not begin a receipt write delivered after its runner has exited', async () => {
++    const persist = vi.fn(async () => {})
++    const { child, result } = launch(new FakeChild(), spec, true, persist)
++    const direct = result.direct.catch((error: unknown) => error)
++    const range = result.owner.waitForExit().catch((error: unknown) => error)
++    child.exit(1, null)
++    await range
++    child.emit('message', { type: 'range-ready', receipt })
++    expect(await direct).toBeInstanceOf(Error)
++    expect(persist).not.toHaveBeenCalled()
++  })
++
+   it('accepts a private result delivered after process exit without waiting for stdio close', async () => {
+     const { child, result } = launch()
+     child.emit('exit', 0, null)
+diff --git a/packages/subprocess/subprocess-local/tests/recovery.spec.ts b/packages/subprocess/subprocess-local/tests/recovery.spec.ts
+new file mode 100644
+index 0000000000..03c9522406
+--- /dev/null
++++ b/packages/subprocess/subprocess-local/tests/recovery.spec.ts
+@@ -0,0 +1,65 @@
++import { describe, expect, it, vi } from 'vitest'
++import { parseSubprocessRangeReceipt } from '@deepseek-ai/dsh-subprocess'
++import type { CurrentTokenProcessBindings, NativePtr } from '@deepseek-ai/dsh-win32-process'
++import { recoverWindowsRange } from '../src/recovery.ts'
++import type { WindowsRangeRecoveryInternals } from '../src/recovery.ts'
++
++const receipt = parseSubprocessRangeReceipt({ kind: 'windows-job', jobName: 'Global\\dsh-subprocess-12345678-1234-4234-8234-123456789abc' })
++const job = 23n as NativePtr
++
++function native(overrides: Partial<WindowsRangeRecoveryInternals> = {}): WindowsRangeRecoveryInternals {
++  return {
++    loadWin32ProcessBindings: vi.fn(() => ({} as CurrentTokenProcessBindings)),
++    openRecoveryJob: vi.fn(() => job),
++    isJobEmpty: vi.fn(() => true),
++    terminateJob: vi.fn(),
++    closeHandleChecked: vi.fn(),
++    ...overrides,
++  }
++}
++
++describe('Windows durable range recovery', () => {
++  it('decodes only exact provider receipts before native recovery', () => {
++    expect(parseSubprocessRangeReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt)
++    for (const value of [null, [], {}, { ...receipt, pid: 123 }, { ...receipt, kind: 'pid' },
++      { ...receipt, jobName: 'Global\\other-job' }, { ...receipt, jobName: receipt.jobName + '\\child' },
++      { ...receipt, jobName: receipt.jobName.replace('-4234-', '-1234-') }]) {
++      expect(() => parseSubprocessRangeReceipt(value)).toThrow('Invalid subprocess recovery receipt')
++    }
++  })
++
++  it('returns for a missing Job without creating or terminating any process', async () => {
++    const api = native({ openRecoveryJob: vi.fn(() => null) })
++    await recoverWindowsRange(receipt, undefined, api)
++    expect(api.openRecoveryJob).toHaveBeenCalledWith({}, receipt.jobName)
++    expect(api.terminateJob).not.toHaveBeenCalled()
++    expect(api.closeHandleChecked).not.toHaveBeenCalled()
++  })
++
++  it('awaits empty Job accounting after accepted termination', async () => {
++    const api = native({ isJobEmpty: vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(false).mockReturnValue(true) })
++    await recoverWindowsRange(receipt, undefined, api)
++    expect(api.terminateJob).toHaveBeenCalledExactlyOnceWith({}, job, 1)
++    expect(api.isJobEmpty).toHaveBeenCalledTimes(3)
++    expect(api.closeHandleChecked).toHaveBeenCalledExactlyOnceWith({}, job, 'recovered process Job')
++  })
++
++  it('retains failure when opening, terminating, querying, or closing the Job fails', async () => {
++    for (const operation of ['openRecoveryJob', 'terminateJob', 'isJobEmpty', 'closeHandleChecked'] as const) {
++      const error = new Error(operation)
++      const api = native({ [operation]: vi.fn(() => { throw error }) })
++      await expect(recoverWindowsRange(receipt, undefined, api)).rejects.toBe(error)
++      if (operation !== 'openRecoveryJob') expect(api.closeHandleChecked).toHaveBeenCalledOnce()
++    }
++  })
++
++  it('aborts an unsettled observation and closes only its opened native handle', async () => {
++    const controller = new AbortController()
++    const api = native({ isJobEmpty: vi.fn(() => { controller.abort(new Error('deadline')); return false }) })
++    await expect(recoverWindowsRange(receipt, controller.signal, api)).rejects.toThrow()
++    expect(api.closeHandleChecked).toHaveBeenCalledOnce()
++    const untouched = native()
++    await expect(recoverWindowsRange(receipt, controller.signal, untouched)).rejects.toThrow('deadline')
++    expect(untouched.loadWin32ProcessBindings).not.toHaveBeenCalled()
++  })
++})
+diff --git a/packages/subprocess/win32-process/tests/recovery.spec.ts b/packages/subprocess/win32-process/tests/recovery.spec.ts
+new file mode 100644
+index 0000000000..25ab08587f
+--- /dev/null
++++ b/packages/subprocess/win32-process/tests/recovery.spec.ts
+@@ -0,0 +1,50 @@
++import { describe, expect, it, vi } from 'vitest'
++import { createRecoveryJobForCurrentProcess, openRecoveryJob } from '../src/process.ts'
++import type { NativePtr, Win32ProcessBindings } from '../src/ffi.ts'
++
++function native(overrides: Partial<Win32ProcessBindings> = {}) {
++  const methods = {
++    createJobObjectW: vi.fn(() => 3n as NativePtr),
++    openJobObjectW: vi.fn(() => 3n as NativePtr),
++    getCurrentProcess: vi.fn(() => 4n as NativePtr),
++    setInformationJobObject: vi.fn(() => 1),
++    assignProcessToJobObject: vi.fn(() => 1),
++    closeHandle: vi.fn(() => 1),
++    getLastError: vi.fn(() => 0),
++    formatMessageW: vi.fn(() => 0),
++  }
++  return { api: { ...methods, ...overrides } as Win32ProcessBindings, methods }
++}
++
++describe('named native recovery Job', () => {
++  it('assigns the current runner before returning its named kill-on-close handle', () => {
++    const { api, methods } = native()
++    expect(createRecoveryJobForCurrentProcess(api, 'Global\\unique')).toBe(3n)
++    expect(methods.createJobObjectW).toHaveBeenCalledWith(null, 'Global\\unique')
++    expect(methods.setInformationJobObject).toHaveBeenCalledOnce()
++    expect(methods.assignProcessToJobObject).toHaveBeenCalledWith(3n, 4n)
++    expect(methods.closeHandle).not.toHaveBeenCalled()
++  })
++
++  it('rejects a name collision without changing or terminating the existing Job', () => {
++    const { api, methods } = native({ getLastError: () => 183 })
++    expect(() => createRecoveryJobForCurrentProcess(api, 'Global\\collision')).toThrow('183')
++    expect(methods.closeHandle).toHaveBeenCalledWith(3n)
++    expect(methods.setInformationJobObject).not.toHaveBeenCalled()
++    expect(methods.assignProcessToJobObject).not.toHaveBeenCalled()
++  })
++
++  it('closes a newly created Job on assignment failure', () => {
++    const { api, methods } = native({ assignProcessToJobObject: () => 0, getLastError: () => 5 })
++    expect(() => createRecoveryJobForCurrentProcess(api, 'Global\\unique')).toThrow('AssignProcessToJobObject')
++    expect(methods.closeHandle).toHaveBeenCalledWith(3n)
++  })
++
++  it('opens only query and terminate access and distinguishes absence from denied access', () => {
++    const { api, methods } = native()
++    expect(openRecoveryJob(api, 'Global\\unique')).toBe(3n)
++    expect(methods.openJobObjectW).toHaveBeenCalledWith(12, 0, 'Global\\unique')
++    expect(openRecoveryJob(native({ openJobObjectW: () => 0n as NativePtr, getLastError: () => 2 }).api, 'missing')).toBeNull()
++    expect(() => openRecoveryJob(native({ openJobObjectW: () => 0n as NativePtr, getLastError: () => 5 }).api, 'denied')).toThrow('OpenJobObjectW')
++  })
++})
+diff --git a/packages/subprocess/win32-process/tests/recovery-native.spec.ts b/packages/subprocess/win32-process/tests/recovery-native.spec.ts
+new file mode 100644
+index 0000000000..6796a67d39
+--- /dev/null
++++ b/packages/subprocess/win32-process/tests/recovery-native.spec.ts
+@@ -0,0 +1,52 @@
++import { spawn } from 'node:child_process'
++import { randomUUID } from 'node:crypto'
++import { fileURLToPath } from 'node:url'
++import { setTimeout } from 'node:timers/promises'
++import { describe, expect, it } from 'vitest'
++import { closeHandleChecked, isJobEmpty, loadWin32ProcessBindings, openRecoveryJob, terminateJob } from '../src/index.ts'
++
++describe.skipIf(process.platform !== 'win32')('Windows native durable Job recovery', () => {
++  it('reopens the owner Job and joins its runner, child and grandchild', async () => {
++    const name = `Global\\dsh-subprocess-${randomUUID()}`
++    const fixture = fileURLToPath(new URL('./fixtures/recovery-owner.ts', import.meta.url))
++    const child = spawn(process.execPath, ['--import', 'tsx/esm', fixture, name], {
++      stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
++    })
++    let stderr = ''
++    child.stderr?.on('data', (data: Buffer) => { stderr += data.toString() })
++    const exited = new Promise<void>((resolve, reject) => {
++      child.once('exit', () => { resolve() })
++      child.once('error', reject)
++    })
++    const api = loadWin32ProcessBindings()
++    const signal = AbortSignal.timeout(15_000)
++    try {
++      await new Promise<void>((resolve, reject) => {
++        const onAbort = (): void => { reject(new Error('native owner readiness timed out', { cause: signal.reason })) }
++        signal.addEventListener('abort', onAbort, { once: true })
++        child.once('message', () => { signal.removeEventListener('abort', onAbort); resolve() })
++        child.once('exit', () => { signal.removeEventListener('abort', onAbort); reject(new Error(`owner exited before readiness: ${stderr}`)) })
++        child.once('error', reject)
++      })
++      const job = openRecoveryJob(api, name)
++      expect(job).not.toBeNull()
++      if (job === null) throw new Error('ready owner has no named Job')
++      try {
++        expect(isJobEmpty(api, job)).toBe(false)
++        terminateJob(api, job, 1)
++        while (!isJobEmpty(api, job)) await setTimeout(10, undefined, { signal })
++      } finally {
++        closeHandleChecked(api, job, 'test recovery Job')
++      }
++      await exited
++      expect(openRecoveryJob(api, name)).toBeNull()
++    } finally {
++      const remaining = openRecoveryJob(api, name)
++      if (remaining !== null) {
++        try { terminateJob(api, remaining, 1) } finally { closeHandleChecked(api, remaining, 'test failure cleanup') }
++      }
++      child.kill()
++      await exited
++    }
++  }, 20_000)
++})
+diff --git a/packages/subprocess/win32-process/tests/fixtures/recovery-owner.ts b/packages/subprocess/win32-process/tests/fixtures/recovery-owner.ts
+new file mode 100644
+index 0000000000..5ad0c4c650
+--- /dev/null
++++ b/packages/subprocess/win32-process/tests/fixtures/recovery-owner.ts
+@@ -0,0 +1,17 @@
++/** Disposable native owner used by the Windows recovery integration test. */
++
++import { spawn } from 'node:child_process'
++import { createRecoveryJobForCurrentProcess, loadWin32ProcessBindings } from '../../src/index.ts'
++
++const name = process.argv[2]
++if (name === undefined) throw new Error('missing recovery Job name')
++createRecoveryJobForCurrentProcess(loadWin32ProcessBindings(), name)
++const target = spawn(process.execPath, ['-e', `
++  const { spawn } = require('node:child_process')
++  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
++  child.once('spawn', () => { process.stdout.write('descendant-ready\\n') })
++  setInterval(() => {}, 1000)
++`], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
++target.stdout.once('data', () => { process.send?.({ ready: true }) })
++target.on('error', (error) => { throw error })
++setInterval(() => {}, 1000)

@@ -1,0 +1,7 @@
+- insert:
+    - id: deep-cluster-subprocess
+      name: '@deepseek-ai/dsh-subprocess-local'
+    - id: deep-cluster
+      name: '@deepseek-ai/dsh-experimental-deep-cluster'
+    - id: deep-cluster-command
+      name: '@deepseek-ai/dsh-experimental-deep-cluster/command'

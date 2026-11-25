@@ -1,0 +1,5 @@
+- insert:
+    - id: deep-cluster-team
+      name: '@deepseek-ai/dsh-experimental-deep-cluster/team'
+      disabled: !!js process.env.DSH_DEEP_CLUSTER_TEAM === undefined
+      config: !!js JSON.parse(process.env.DSH_DEEP_CLUSTER_TEAM ?? '{}')

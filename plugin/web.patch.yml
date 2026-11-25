@@ -1,0 +1,41 @@
+# DeepCluster dashboard overlay for the `web` profile.
+#
+# It composes once on both a saved web profile (which already inserts the
+# DeepCluster bundle's service rows and a `deep-cluster-dashboard` row) and a
+# clean web profile (which has none of them):
+#   - `insert` without an id appends an unconditional duplicate, so this file
+#     never inserts the saved ids;
+#   - id-targeted entries replace a row when it exists and warn-and-skip when
+#     it does not, so the saved rows are disabled when present;
+#   - the active service rows below always use distinct ids, keeping exactly
+#     one bare package row (the browser client-module scan discovers
+#     `dsh.client` only through the exact bare package specifier) and one
+#     dashboard row.
+# The bundle's `deep-cluster-subprocess` row registers `subprocess` a second
+# time, and `deep-cluster-command` parses the launcher's argv and exits the web
+# host (`unknown option --host`); both stay disabled here. The saved bare row is
+# replaced rather than left active so no profile shape mounts it twice.
+#
+# Roots are deployment values, never hardcoded: set DEEPCLUSTER_WORKSPACE to the
+# absolute primary root and DEEPCLUSTER_WORKSPACES to a JSON array of absolute
+# additional saved roots. The service launcher sets both from its saved
+# configuration before starting this profile. No token or credential belongs
+# here.
+- id: deep-cluster-subprocess
+  disabled: true
+- id: deep-cluster-command
+  disabled: true
+- id: deep-cluster
+  disabled: true
+- id: deep-cluster-dashboard
+  disabled: true
+- insert:
+    - id: deep-cluster-service
+      name: '@deepseek-ai/dsh-experimental-deep-cluster'
+    - id: deep-cluster-service-dashboard
+      name: '@deepseek-ai/dsh-experimental-deep-cluster/web'
+      config:
+        workspace: !!js process.env.DEEPCLUSTER_WORKSPACE ?? process.env.DEEPCLUSTER_DASHBOARD_WORKSPACE ?? process.cwd()
+        workspaces: !!js JSON.parse(process.env.DEEPCLUSTER_WORKSPACES ?? '[]')
+        pollIntervalMs: 1000
+        eventLimit: 300

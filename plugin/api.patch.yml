@@ -1,0 +1,13 @@
+- id: deep-cluster-command
+  disabled: true
+- insert:
+    - id: deep-cluster-api-server
+      name: '@deepseek-ai/dsh-host-webserver'
+      config:
+        host: 127.0.0.1
+        port: !!js Number(process.env.DEEPCLUSTER_API_PORT ?? 3789)
+    - id: deep-cluster-api
+      name: '@deepseek-ai/dsh-experimental-deep-cluster/api'
+      config:
+        stateDirectory: !!js process.env.DEEPCLUSTER_API_STATE_DIRECTORY
+        leaseRoot: !!js process.env.DEEPCLUSTER_API_LEASE_ROOT

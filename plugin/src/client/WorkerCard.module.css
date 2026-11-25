@@ -1,0 +1,66 @@
+.card {
+  position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; overflow: hidden;
+  padding: 14px 16px 44px; background: var(--cluster-panel); border: 1px solid var(--cluster-hair); box-sizing: border-box;
+}
+.card > * { position: relative; }
+.card > span[aria-hidden='true'] { position: absolute; }
+.top { display: flex; align-items: center; gap: 0; height: 16px; flex: none; }
+.square { width: 5px; height: 5px; background: var(--cluster-fg); margin-right: 10px; flex: none; }
+.eyebrow { font-size: 9px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--cluster-muted); white-space: nowrap; }
+.rule { flex: 1; height: 1px; margin: 0 10px; background: var(--cluster-hair); }
+.top > span:last-child { height: 16px; font-size: 8px; }
+.empty { margin: 28px 0 0; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cluster-muted); }
+.body { display: flex; flex-direction: column; min-height: 0; flex: 1; animation: cardIn 560ms var(--cluster-ease) both; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 22px; }
+.title { margin: 14px 0 0; font-size: 21px; line-height: 40px; font-weight: 600; letter-spacing: -0.01em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.title > span { background: var(--cluster-fg); color: var(--cluster-bg); padding: 4px 12px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.loaded { margin: 12px 0 0; font-size: 8.5px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cluster-fg-soft); }
+.loadedLine { display: flex; align-items: center; gap: 7px; margin: 3px 0 0; font-size: 8.5px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cluster-fg-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.loadedLine > i { width: 5px; height: 5px; flex: none; background: var(--cluster-accent); }
+.error { margin: 8px 0 0; font-size: 10px; color: var(--cluster-accent); }
+.profileBar { display: flex; justify-content: space-between; align-items: center; height: 18px; margin-top: 16px; padding: 0 8px; background: var(--cluster-fg); color: var(--cluster-bg); font-size: 9px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+.cells { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 11px 0 0; padding: 0 8px; }
+.cells > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: baseline; min-height: 20px; }
+.cells dt { font-size: 8.5px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cluster-muted); }
+.cells dd { margin: 0; font-size: 11px; color: var(--cluster-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.cells dd small { margin-left: 5px; font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cluster-muted); }
+.listHead { display: flex; justify-content: space-between; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--cluster-hair); font-size: 8.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--cluster-muted); }
+.listHead > span[data-live] { color: var(--cluster-accent); }
+.list { list-style: none; margin: 8px 0 0; padding: 0; flex: 1; min-height: 72px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--cluster-line-faint) transparent; }
+.list > li {
+  position: relative; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 4px; align-items: start; padding: 4px 4px 4px 0;
+  min-height: 24px; box-sizing: border-box; animation: rowIn 420ms var(--cluster-ease) both; transition: background-color 180ms var(--cluster-ease);
+}
+@keyframes rowIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+.list > li::before { content: ''; position: absolute; left: -8px; top: 4px; bottom: 4px; width: 2px; background: var(--cluster-accent); transform: scaleY(0); transition: transform 240ms var(--cluster-ease); }
+.list > li:hover { background: color-mix(in srgb, var(--cluster-fg) 6%, transparent); }
+.list > li:hover::before { transform: scaleY(1); }
+.list > li[data-latest] { background: var(--cluster-panel-hi); }
+.list > li[data-latest]::after { content: ''; position: absolute; left: -8px; top: 0; bottom: 0; width: 3px; background: var(--cluster-accent); }
+.no { font-size: 11px; font-weight: 500; line-height: 16px; color: var(--cluster-muted); font-variant-numeric: tabular-nums; }
+li[data-latest] .no { color: var(--cluster-accent); }
+.what { min-width: 0; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--cluster-fg); overflow-wrap: anywhere; }
+.what small { display: block; margin-top: 2px; font-size: 10px; font-weight: 400; line-height: 14px; color: var(--cluster-muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.what small.phase { color: var(--cluster-accent); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; }
+.list time { font-size: 11px; line-height: 16px; color: var(--cluster-fg-soft); font-variant-numeric: tabular-nums; }
+.none { display: block !important; font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cluster-muted); padding: 6px 0 !important; }
+.buttons { display: flex; gap: 10px; margin-top: 14px; padding: 4px; flex: none; }
+.buttons button { display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; border: 1px solid var(--cluster-fg); font: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; white-space: nowrap; transition: background-color 220ms var(--cluster-ease), color 220ms var(--cluster-ease), outline-color 220ms var(--cluster-ease); }
+.primary { background: var(--cluster-fg); color: var(--cluster-bg); }
+.primary kbd { font: inherit; font-size: 8.5px; font-weight: 500; letter-spacing: 0.12em; color: color-mix(in srgb, var(--cluster-bg) 55%, var(--cluster-fg)); margin-left: 4px; }
+.play { width: 0; height: 0; border-style: solid; border-width: 4.5px 0 4.5px 8px; border-color: transparent transparent transparent var(--cluster-bg); }
+.primary:hover { background: var(--cluster-accent); border-color: var(--cluster-accent); color: var(--cluster-on-accent); }
+.secondary { position: relative; background: var(--cluster-bg); color: var(--cluster-fg); outline: 1px solid var(--cluster-accent); outline-offset: 3px; flex: 1; justify-content: space-between; min-width: 0; }
+.secondary > span { overflow: hidden; text-overflow: ellipsis; }
+.secondary svg { width: 10px; height: 10px; flex: none; fill: none; stroke: var(--cluster-accent); stroke-width: 1.5; transition: transform 260ms var(--cluster-ease); }
+.secondary:hover svg { transform: translate(2px, -2px); }
+.secondary:hover { background: var(--cluster-panel-hi); }
+.buttons button:focus-visible { outline: 1px solid var(--cluster-accent); outline-offset: 3px; }
+.pages { position: absolute !important; left: 0; right: 0; bottom: 12px; display: flex; justify-content: center; align-items: center; gap: 9px; }
+.pages > span { margin-left: 4px; font-size: 8.5px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cluster-muted); background: var(--cluster-panel); padding: 2px 6px; }
+.pages button { display: grid; place-items: center; width: 16px; height: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.pages button > i { width: 7px; height: 7px; border-radius: 50%; border: 1.2px solid var(--cluster-muted); box-sizing: border-box; transition: background-color 260ms var(--cluster-ease), border-color 260ms var(--cluster-ease), transform 260ms var(--cluster-ease); }
+.pages button[aria-pressed='true'] > i { background: var(--cluster-accent); border-color: var(--cluster-accent); transform: scale(1.1); }
+.pages button:focus-visible { outline: 1px solid var(--cluster-accent); }
+@media (prefers-reduced-motion: reduce) { .body, .list > li { animation: none; } }

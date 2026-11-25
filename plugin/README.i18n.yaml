@@ -1,0 +1,88 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/experimental/deep-cluster/README.md
+/:
+  en: db2c9510c798b4d0
+  zh: 44fcb9966b2b7063
+/deepseek-ai-dsh-experimental-deep-cluster:
+  en: 6a3850e3640d6b99
+  zh: 24c9c395d7fb409b
+/deepseek-ai-dsh-experimental-deep-cluster/summary:
+  en: ce1c66f59aa6e8e9
+  zh: 670eeda786fc540f
+/deepseek-ai-dsh-experimental-deep-cluster/table-of-contents:
+  en: ea1a5cd8b38f084c
+  zh: dc3ae0598ebec338
+/deepseek-ai-dsh-experimental-deep-cluster/quick-start:
+  en: 8f7d2382f4a9147b
+  zh: 0675460d1b092444
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package:
+  en: c0c0efb0c30f76a5
+  zh: 484a6b6bb6dae7eb
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/install-into-dsh-profiles:
+  en: 5bb0e1210eccf2e9
+  zh: d39f2c02ee7db468
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/install-the-skill-for-any-harness:
+  en: 03388014d9821e6a
+  zh: 4b5446a1ff9ba412
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/build-pack-and-host-requirements:
+  en: c97f9b6505c72a67
+  zh: ea0961791bccde1b
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/source-checkout:
+  en: 28b7ef7405a4732d
+  zh: fc86c70d2af2e581
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/persistent-local-service:
+  en: 4f77e43262d40687
+  zh: 7efdb7dfe555df59
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/write-and-inspect-a-plan:
+  en: dd738dd3753316f5
+  zh: 438dd805358e976f
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/version-control-and-write-claims:
+  en: f50319367042c5cd
+  zh: 8df6f5ed9ff0fb57
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/lease-hardware-and-inspect-outcomes:
+  en: 7dc79944787b334e
+  zh: 264998b2bba2232e
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/share-knowledge-between-runs:
+  en: 419e0af5d00c2e9e
+  zh: 99fbabc7b98bed4a
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/continue-or-replace-a-worker:
+  en: 5e7d49adb651c6fb
+  zh: 14f41ca0b08eb654
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/queue-a-bounded-wakeup:
+  en: 2da5a6152b59ecac
+  zh: 25858b630cb8b6b3
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/configure-host-policy-hooks:
+  en: 74ad5bd63d80273f
+  zh: 62986eb1acce9d1c
+/deepseek-ai-dsh-experimental-deep-cluster/use-this-package/observe-the-dashboard:
+  en: 4afbe29b57135ee3
+  zh: fb94b24f279e6c21
+/deepseek-ai-dsh-experimental-deep-cluster/understand-the-implementation:
+  en: b8521448818ef01e
+  zh: 9ada0d7b3e5d8da9
+/deepseek-ai-dsh-experimental-deep-cluster/further-exploration:
+  en: ed65a8c479262473
+  zh: c587ae597440d441
+/deepseek-ai-dsh-experimental-deep-cluster/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-experimental-deep-cluster/model-experience/worker-requests-and-prerequisite-evidence:
+  en: b4197f87b1f39a01
+  zh: 17eb78949c93f3cd
+/deepseek-ai-dsh-experimental-deep-cluster/model-experience/worker-requests-and-prerequisite-evidence/what-the-model-sees:
+  en: ece550448e290c51
+  zh: d38586d5b0991f4a
+/deepseek-ai-dsh-experimental-deep-cluster/model-experience/worker-requests-and-prerequisite-evidence/token-effect:
+  en: daf3ce3c961394b4
+  zh: c96b1d68a9fd895a
+/deepseek-ai-dsh-experimental-deep-cluster/model-experience/worker-requests-and-prerequisite-evidence/kv-cache-effect:
+  en: bdba1af09d5d79c4
+  zh: 0a40842b317e8b0f
+/deepseek-ai-dsh-experimental-deep-cluster/known-limitations-and-deferred-work:
+  en: 9250e0072295aea8
+  zh: 949daf697c230d0f
+/deepseek-ai-dsh-experimental-deep-cluster/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 8ec3e73528ddb1a6

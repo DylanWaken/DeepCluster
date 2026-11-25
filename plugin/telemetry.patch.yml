@@ -1,0 +1,9 @@
+- insert:
+    - id: deep-cluster-telemetry
+      name: '@deepseek-ai/dsh-experimental-deep-cluster/telemetry'
+      config:
+        tokenizerFile: !!js process.env.DEEPCLUSTER_TOKENIZER_FILE
+        tokenizerConfigFile: !!js process.env.DEEPCLUSTER_TOKENIZER_CONFIG_FILE
+        tokenizer: !!js process.env.DEEPCLUSTER_TOKENIZER_LABEL
+        models: [deepseek-flash]
+        sampleIntervalMs: 250

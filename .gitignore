@@ -1,0 +1,24 @@
+# Build output
+node_modules/
+lib/
+coverage/
+*.tsbuildinfo
+*.tgz
+
+# Per-user profiles, generated skills, worker sessions, and service logs
+.deep-cluster/
+.deepseek/
+.dsh/
+.agents/
+.claude/
+.cursor/
+.codex/
+.env
+.env.*
+.npmrc
+credentials.json
+.credentials.yaml
+startup-url.txt
+*.pem
+*.key
+*.log

@@ -1,0 +1,160 @@
+{
+  "name": "@deepseek-ai/dsh-experimental-deep-cluster",
+  "description": "DeepCluster dependency-aware worker scheduling, hardware leases, task evidence and live operations UI",
+  "version": "0.2.1-rc.2",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DylanWaken/DeepCluster.git",
+    "directory": "plugin"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "pack:check": "node scripts/pack-clean.mjs --check",
+    "pack:clean": "node scripts/pack-clean.mjs",
+    "prepack": "node scripts/pack-clean.mjs --check"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts"
+    },
+    "./package.json": "./package.json",
+    "./command": {
+      "types": "./lib/types/command.d.ts",
+      "default": "./lib/command.js"
+    },
+    "./api": {
+      "types": "./lib/types/api.d.ts",
+      "default": "./lib/api.js"
+    },
+    "./api.patch.yml": "./api.patch.yml",
+    "./web.patch.yml": "./web.patch.yml",
+    "./team.patch.yml": "./team.patch.yml",
+    "./policy.patch.yml": "./policy.patch.yml",
+    "./telemetry.patch.yml": "./telemetry.patch.yml",
+    "./web": {
+      "types": "./lib/types/web.d.ts",
+      "default": "./lib/web.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./dashboard-types": {
+      "types": "./lib/types/dashboard-types.d.ts"
+    },
+    "./telemetry": {
+      "types": "./lib/types/telemetry.d.ts",
+      "default": "./lib/telemetry.js"
+    },
+    "./team": {
+      "types": "./lib/types/team.d.ts",
+      "default": "./lib/team.js"
+    },
+    "./policy": {
+      "types": "./lib/types/policy.d.ts",
+      "default": "./lib/policy.js"
+    }
+  },
+  "files": [
+    "lib/*.js",
+    "lib/typert.host.js",
+    "lib/typert.remote-client.js",
+    "cordis.patch.yml",
+    "api.patch.yml",
+    "web.patch.yml",
+    "team.patch.yml",
+    "policy.patch.yml",
+    "telemetry.patch.yml",
+    "skills",
+    "lib/types/**/*.d.ts",
+    "lib/typert.host.d.ts",
+    "lib/typert.remote-client.d.ts"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-subprocess-local": "workspace:*",
+    "@deepseek-ai/dsh-typert-protocol": "workspace:*",
+    "@deepseek-ai/dsh-util-values": "workspace:*",
+    "@deepseek-ai/schemastery": "workspace:~",
+    "@huggingface/tokenizers": "0.2.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/dsh-agent": "workspace:*",
+    "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-brand": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-slots": "workspace:*",
+    "@deepseek-ai/dsh-host-webserver": "workspace:*",
+    "@deepseek-ai/dsh-subprocess": "workspace:*",
+    "@deepseek-ai/dsh-tools": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/cordis-plugin-include": "workspace:~",
+    "@deepseek-ai/cordis-plugin-loader": "workspace:~",
+    "@deepseek-ai/dsh-agent": "workspace:*",
+    "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-loader-smoke": "workspace:*",
+    "@deepseek-ai/dsh-llm": "workspace:*",
+    "@deepseek-ai/dsh-api-remotes": "workspace:*",
+    "@deepseek-ai/dsh-brand": "workspace:*",
+    "@deepseek-ai/dsh-client-locale": "workspace:*",
+    "@deepseek-ai/dsh-client-resources": "workspace:*",
+    "@deepseek-ai/dsh-client-test-runtime": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-layout": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-primitives": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-renderer": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-sidebar": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-slots": "workspace:*",
+    "@deepseek-ai/dsh-cmdline": "workspace:*",
+    "@deepseek-ai/dsh-host-webserver": "workspace:*",
+    "@deepseek-ai/dsh-subprocess": "workspace:*",
+    "@deepseek-ai/dsh-system-prompt": "workspace:*",
+    "@deepseek-ai/dsh-tools": "workspace:*",
+    "@deepseek-ai/dsh-typert-registry": "workspace:*",
+    "@testing-library/react": "^16.3.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/three": "^0.186.0",
+    "js-yaml": "^4.3.2",
+    "react": "^18.2.0",
+    "three": "^0.186.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-resources",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  }
+}
